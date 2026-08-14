@@ -230,13 +230,11 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if isinstance(result, list):
             for r in result:
-                await update.message.reply_document(document=open(r['filename'], 'rb'), filename=Path(r['filename']).name)
+                await update.message.reply_audio(audio=open(r['filename'], 'rb'), filename=Path(r['filename']).name)
             db.increment_download(user.id)
-            await update.message.reply_text(f"✅ {len(result)} فایل دانلود شد!")
         else:
-            await update.message.reply_document(document=open(result['filename'], 'rb'), filename=Path(result['filename']).name)
+            await update.message.reply_audio(audio=open(result['filename'], 'rb'), filename=Path(result['filename']).name)
             db.increment_download(user.id)
-            await update.message.reply_text("✅ دانلود کامل شد!")
 
             if update.message.text and '--recognize' in update.message.text:
                 # trigger recognize automatically if flag present (optional)
@@ -429,19 +427,18 @@ async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             artist = track.get('artist', {}).get('name', 'نامشخص') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
             await query.edit_message_text(f"🎵 {title}\n👤 {artist}\n\n⬇️ در حال دانلود...")
 
-            # دانلود از YouTube با لینک مستقیم
-            url = track.get('url', '')
-            if not url:
-                search_query = f"{title} {artist} audio"
-                downloader = Downloader(output_dir=DOWNLOAD_DIR)
-                result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
-            else:
-                downloader = Downloader(output_dir=DOWNLOAD_DIR)
-                result = await downloader.download(url, extract_audio=True, playlist=False)
+            # دانلود از YouTube با جستجو
+            import asyncio as _asyncio
+            await _asyncio.sleep(2)  # وقفه برای جلوگیری از rate limiting
+            search_query = f"{title} {artist} audio"
+            downloader = Downloader(output_dir=DOWNLOAD_DIR)
+            result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
             if result and isinstance(result, list) and len(result) > 0:
                 try:
-                    await query.message.reply_document(
-                        document=open(result[0]['filename'], 'rb'),
+                    await query.message.reply_audio(
+                        audio=open(result[0]['filename'], 'rb'),
+                        title=title,
+                        performer=artist,
                         filename=Path(result[0]['filename']).name
                     )
                     await query.edit_message_text(f"✅ {title} - {artist}")
