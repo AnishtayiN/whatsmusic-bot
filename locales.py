@@ -1,0 +1,68 @@
+# locales.py - فایل ترجمه‌ها
+
+LANGUAGES = {
+    'fa': {
+        'start': "🎵 سلام {name}! به ربات تشخیص و دانلود موزیک خوش آمدید.",
+        'help': "📌 دستورات:\n/start - شروع\n/help - راهنما\n/download <لینک> - دانلود صدا\n/recognize - تشخیص موزیک\n/info <لینک> - اطلاعات\n/stats - آمار شما\n/playlist - مدیریت پلی‌لیست\n/set_quality - تنظیم کیفیت\n/set_lang - تغییر زبان\n/admin - پنل ادمین",
+        'download_start': "⬇️ در حال دانلود از {platform}...",
+        'download_success': "✅ دانلود کامل شد!",
+        'download_fail': "❌ دانلود ناموفق بود.",
+        'recognize_start': "🔍 در حال تشخیص موزیک با Shazam...",
+        'recognize_success': "🎵 **{title}**\n👤 {artist}\n💿 آلبوم: {album}\n🎸 سبک: {genre}\n📅 سال: {year}\n⏱ {duration} ثانیه",
+        'recognize_fail': "❌ تشخیص ناموفق.",
+        'info': "📋 اطلاعات:\n🎵 عنوان: {title}\n👤 کانال: {uploader}\n⏱ مدت: {duration} ثانیه\n👁 بازدید: {views}\n❤️ لایک: {likes}",
+        'stats': "📊 آمار شما:\n📥 دانلودها: {downloads}\n🎵 تشخیص‌ها: {recognizes}\n📅 عضویت: {joined}\n🕐 آخرین فعالیت: {last_active}",
+        'join_required': "❗ برای استفاده از ربات ابتدا در کانال {channel} عضو شوید.",
+        'banned': "⛔ شما مسدود شده‌اید.",
+        'admin_only': "⛔ این دستور فقط برای ادمین‌هاست.",
+        'no_url': "❗ لطفاً یک لینک وارد کنید.",
+        'no_file': "❗ لطفاً یک فایل صوتی ارسال کنید.",
+        'quality_set': "✅ کیفیت به {quality} تنظیم شد.",
+        'lang_set': "✅ زبان به {lang} تغییر یافت.",
+        'playlist_created': "✅ پلی‌لیست {name} ایجاد شد.",
+        'playlist_deleted': "✅ پلی‌لیست حذف شد.",
+        'playlist_added': "✅ آهنگ به پلی‌لیست اضافه شد.",
+        'playlist_removed': "✅ آهنگ از پلی‌لیست حذف شد.",
+        'playlist_list': "📂 پلی‌لیست‌های شما:\n{playlists}",
+        'playlist_songs': "🎵 آهنگ‌های {name}:\n{songs}",
+        'no_playlist': "هیچ پلی‌لیستی ندارید.",
+        'no_songs': "این پلی‌لیست خالی است.",
+        'invalid_quality': "کیفیت باید 128، 192 یا 320 باشد.",
+        'invalid_lang': "زبان باید fa یا en باشد.",
+        'unknown': "⚠️ خطای ناشناخته."
+    },
+    'en': {
+        'start': "🎵 Hello {name}! Welcome to the music download and recognition bot.",
+        'help': "📌 Commands:\n/start - Start\n/help - Help\n/download <url> - Download audio\n/recognize - Recognize music\n/info <url> - Get info\n/stats - Your stats\n/playlist - Manage playlists\n/set_quality - Set quality\n/set_lang - Change language\n/admin - Admin panel",
+        'download_start': "⬇️ Downloading from {platform}...",
+        'download_success': "✅ Download complete!",
+        'download_fail': "❌ Download failed.",
+        'recognize_start': "🔍 Recognizing music with Shazam...",
+        'recognize_success': "🎵 **{title}**\n👤 {artist}\n💿 Album: {album}\n🎸 Genre: {genre}\n📅 Year: {year}\n⏱ {duration} sec",
+        'recognize_fail': "❌ Recognition failed.",
+        'info': "📋 Info:\n🎵 Title: {title}\n👤 Channel: {uploader}\n⏱ Duration: {duration} sec\n👁 Views: {views}\n❤️ Likes: {likes}",
+        'stats': "📊 Your stats:\n📥 Downloads: {downloads}\n🎵 Recognitions: {recognizes}\n📅 Joined: {joined}\n🕐 Last active: {last_active}",
+        'join_required': "❗ Please join {channel} to use the bot.",
+        'banned': "⛔ You are banned.",
+        'admin_only': "⛔ This command is for admins only.",
+        'no_url': "❗ Please provide a URL.",
+        'no_file': "❗ Please send an audio file.",
+        'quality_set': "✅ Quality set to {quality}.",
+        'lang_set': "✅ Language set to {lang}.",
+        'playlist_created': "✅ Playlist {name} created.",
+        'playlist_deleted': "✅ Playlist deleted.",
+        'playlist_added': "✅ Song added to playlist.",
+        'playlist_removed': "✅ Song removed from playlist.",
+        'playlist_list': "📂 Your playlists:\n{playlists}",
+        'playlist_songs': "🎵 Songs in {name}:\n{songs}",
+        'no_playlist': "You have no playlists.",
+        'no_songs': "This playlist is empty.",
+        'invalid_quality': "Quality must be 128, 192, or 320.",
+        'invalid_lang': "Language must be fa or en.",
+        'unknown': "⚠️ Unknown error."
+    }
+}
+
+def get_text(key, lang='fa', **kwargs):
+    text = LANGUAGES.get(lang, LANGUAGES['fa']).get(key, LANGUAGES['fa'].get(key, key))
+    return text.format(**kwargs) if kwargs else text
