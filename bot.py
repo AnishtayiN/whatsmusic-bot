@@ -186,19 +186,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    keyboard = [
+        [InlineKeyboardButton("🔍 جستجوی آهنگ", callback_data="cmd_search")],
+        [InlineKeyboardButton("⬇️ دانلود از لینک", callback_data="cmd_download"),
+         InlineKeyboardButton("🎵 شناسایی آهنگ", callback_data="cmd_recognize")],
+        [InlineKeyboardButton("📝 متن ترانه", callback_data="cmd_lyrics"),
+         InlineKeyboardButton("🎬 تبدیل ویدیو", callback_data="cmd_convert")],
+        [InlineKeyboardButton("📋 اطلاعات ویدیو", callback_data="cmd_info"),
+         InlineKeyboardButton("📊 آمار من", callback_data="cmd_stats")],
+        [InlineKeyboardButton("📂 پلی‌لیست", callback_data="cmd_playlist"),
+         InlineKeyboardButton("🏷️ برچسب‌ها", callback_data="cmd_tag")],
+        [InlineKeyboardButton("⚙️ تنظیمات", callback_data="cmd_settings")],
+    ]
+    if is_admin(user.id):
+        keyboard.append([InlineKeyboardButton("👑 پنل ادمین", callback_data="cmd_admin")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     welcome = (
-        f"🎵 سلام {user.first_name}!\n"
+        f"🎵 سلام {user.first_name}!\n\n"
         "به ربات تشخیص و دانلود موزیک خوش آمدید.\n\n"
-        "📌 دستورات:\n"
-        "/start - نمایش این پیام\n"
-        "/help - راهنما\n"
-        "/download <لینک> - دانلود صدا از تیک‌تاک/یوتوب/اینستا/ساندکلود\n"
-        "/recognize <فایل صوتی> - تشخیص موزیک با Shazam\n"
-        "/info <لینک> - نمایش اطلاعات ویدیو/صوت\n"
-        "/stats - آمار استفاده شما\n"
-        "/admin - پنل ادمین (فقط ادمین‌ها)\n"
+        "💡 فقط کافیه نام آهنگ رو تایپ کنید!\n"
+        "یا از دکمه‌های زیر استفاده کنید:"
     )
-    await update.message.reply_text(welcome)
+    await update.message.reply_text(welcome, reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
@@ -416,6 +427,114 @@ async def lyrics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📝 **{artist} - {title}**\n\n{lyrics}")
     else:
         await update.message.reply_text("❌ متن ترانه یافت نشد.\n\n💡 نکته: نام خواننده و آهنگ رو به انگلیسی وارد کنید.")
+
+# ========== Command Callback Handler ==========
+async def command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """هندلر دکمه‌های منوی اصلی"""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "cmd_search":
+        await query.edit_message_text(
+            "🔍 **جستجوی آهنگ**\n\n"
+            "نام آهنگ یا خواننده رو تایپ کنید:\n\n"
+            "💡 مثال:\n"
+            "• eminem lose yourself\n"
+            "• رضا بهرام گل بیته\n"
+            "• Chester Bennington"
+        )
+
+    elif data == "cmd_download":
+        await query.edit_message_text(
+            "⬇️ **دانلود از لینک**\n\n"
+            "لینک ویدیو رو بفرستید:\n\n"
+            "💡 مثال:\n"
+            "/download https://www.youtube.com/watch?v=...\n"
+            "/download https://www.tiktok.com/@user/video/...\n"
+            "/download https://www.instagram.com/reel/..."
+        )
+
+    elif data == "cmd_recognize":
+        await query.edit_message_text(
+            "🎵 **شناسایی آهنگ**\n\n"
+            "یک فایل صوتی یا ویس بفرستید و روش /recognize بزنید.\n\n"
+            "💡 روش‌ها:\n"
+            "۱. فایل صوتی بفرست + روش /recognize بزن\n"
+            "۲. ویس بفرست + روش /recognize بزن\n"
+            "۳. ریپلای به فایل صوتی با /recognize"
+        )
+
+    elif data == "cmd_lyrics":
+        await query.edit_message_text(
+            "📝 **متن ترانه**\n\n"
+            "نام خواننده و آهنگ رو وارد کنید:\n\n"
+            "💡 مثال:\n"
+            "/lyrics Eminem Lose Yourself\n"
+            "/lyrics رضا بهرام گل بیته"
+        )
+
+    elif data == "cmd_convert":
+        await query.edit_message_text(
+            "🎬 **تبدیل ویدیو به صدا**\n\n"
+            "لینک ویدیو رو بفرستید:\n\n"
+            "💡 مثال:\n"
+            "/convert https://www.youtube.com/watch?v=..."
+        )
+
+    elif data == "cmd_info":
+        await query.edit_message_text(
+            "📋 **اطلاعات ویدیو**\n\n"
+            "لینک ویدیو رو بفرستید:\n\n"
+            "💡 مثال:\n"
+            "/info https://www.youtube.com/watch?v=..."
+        )
+
+    elif data == "cmd_stats":
+        user = update.effective_user
+        data_db = db.get_user(user.id)
+        if data_db:
+            msg = (
+                f"📊 **آمار شما**\n\n"
+                f"📥 دانلودها: {data_db.get('download_count', 0)}\n"
+                f"🎵 تشخیص‌ها: {data_db.get('recognize_count', 0)}\n"
+                f"📅 عضویت: {data_db.get('joined_at', 'نامشخص')}\n"
+                f"🕐 آخرین فعالیت: {data_db.get('last_active', 'نامشخص')}"
+            )
+        else:
+            msg = "❌ آماری یافت نشد."
+        await query.edit_message_text(msg)
+
+    elif data == "cmd_playlist":
+        await query.edit_message_text(
+            "📂 **مدیریت پلی‌لیست**\n\n"
+            "💡 دستورات:\n"
+            "/playlist create <نام> - ایجاد پلی‌لیست\n"
+            "/playlist delete <نام> - حذف پلی‌لیست\n"
+            "/playlist list - نمایش پلی‌لیست‌ها\n"
+            "/playlist show <نام> - نمایش آهنگ‌ها"
+        )
+
+    elif data == "cmd_tag":
+        await query.edit_message_text(
+            "🏷️ **مدیریت برچسب‌ها**\n\n"
+            "💡 دستورات:\n"
+            "/tag add <song_id> <tag> - افزودن برچسب\n"
+            "/tag remove <song_id> <tag> - حذف برچسب\n"
+            "/tag list - نمایش برچسب‌ها\n"
+            "/tag search <tag> - جستجو با برچسب"
+        )
+
+    elif data == "cmd_settings":
+        await query.edit_message_text(
+            "⚙️ **تنظیمات**\n\n"
+            "💡 دستورات:\n"
+            "/set_quality 128|192|320 - تنظیم کیفیت\n"
+            "/set_lang fa|en - تغییر زبان"
+        )
+
+    elif data == "cmd_admin":
+        await query.edit_message_text("👑 **پنل ادمین**\n\nبرای باز کردن پنل ادمین /admin بزنید.")
 
 # ========== Search Callback ==========
 async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -645,9 +764,10 @@ def main():
     app.add_handler(CommandHandler("convert", convert_command))
     app.add_handler(CommandHandler("lyrics", lyrics_command))
 
-    # Callback query (admin panel + search results)
+    # Callback query (admin panel + search results + commands)
     app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
     app.add_handler(CallbackQueryHandler(search_callback, pattern='^search_'))
+    app.add_handler(CallbackQueryHandler(command_callback, pattern='^cmd_'))
 
     # Unified text handler (admin commands + broadcast + music search)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unified_text_handler))
