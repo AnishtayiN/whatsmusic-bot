@@ -10,11 +10,18 @@
 - 🔒 **جوین اجباری** کانال (قابل تنظیم)
 - 👑 **پنل ادمین** با دستورات: آمار، ارسال همگانی، لیست کاربران، مسدود/رفع مسدودیت، تنظیم کانال
 - 📊 آمار کاربران و استفاده
-- 🎧 پخش خودکار بعد از دانلود (اختیاری)
-- 📁 پشتیبانی از کوکی برای سایت‌های محدود
-- 🖥 فرمت‌های خروجی: mp3, m4a, wav, flac
+- 🎬 **تبدیل ویدیو به صدا** با ffmpeg
+- 🏷️ **برچسب‌ها و فیلترها** برای دسته‌بندی آهنگ‌ها
+- 📂 **پلی‌لیست‌های شخصی** (ایجاد، حذف، افزودن آهنگ، نمایش)
+- 🎛 **کیفیت انتخابی** (128/192/320 kbps)
+- 🌐 **تغییر زبان** (فارسی/انگلیسی)
+- 🧩 **ساختار پلاگین** (قابل گسترش)
+- 📊 **داشبورد گرافیکی** با نمودارهای آماری
+- 🐳 **داکر** (راه‌اندازی یک‌دقیقه‌ای)
 
 ## 📦 نصب و راه‌اندازی
+
+### روش معمولی (بدون داکر)
 
 ```bash
 # کلون پروژه
@@ -24,12 +31,28 @@ cd whatsmusic-bot
 # نصب وابستگی‌ها
 pip install -r requirements.txt
 
+# نصب ffmpeg (برای تبدیل ویدیو به صدا)
+# Ubuntu/Debian: sudo apt install ffmpeg
+# Mac: brew install ffmpeg
+# Windows: دانلود از ffmpeg.org
+
 # تنظیم متغیرهای محیطی
 cp .env.example .env
 # ویرایش .env با توکن ربات و تنظیمات دلخواه
 
 # اجرای ربات
 python bot.py
+```
+
+### روش داکر
+
+```bash
+# با docker-compose
+docker-compose up -d
+
+# یا با docker build
+docker build -t whatsmusic-bot .
+docker run -d --name whatsmusic-bot --env-file .env -v ./data:/app/data -v ./downloads:/app/downloads whatsmusic-bot
 ```
 
 ## 🔧 تنظیمات (.env)
@@ -49,9 +72,14 @@ python bot.py
 - `/start` - شروع و راهنما
 - `/help` - راهنما
 - `/download <لینک>` - دانلود صدا
+- `/convert <لینک>` - تبدیل ویدیو به صدا
 - `/recognize` (پاسخ به فایل صوتی) - تشخیص موزیک
 - `/info <لینک>` - نمایش اطلاعات
 - `/stats` - آمار استفاده شما
+- `/set_quality 128|192|320` - تنظیم کیفیت
+- `/set_lang fa|en` - تغییر زبان
+- `/playlist` - مدیریت پلی‌لیست
+- `/tag` - مدیریت برچسب‌ها
 
 ### ادمین‌ها:
 - `/admin` - پنل مدیریت (دکمه‌ای)
@@ -63,13 +91,23 @@ python bot.py
 
 ```
 whatsmusic-bot/
-├── bot.py            # ربات تلگرام + جوین اجباری + پنل ادمین
-├── downloader.py     # دانلود با yt-dlp
-├── recognizer.py     # تشخیص با shazamio
-├── utils.py          # توابع کمکی
-├── main.py           # ورودی خط فرمان (CLI)
+├── bot.py              # ربات تلگرام + جوین اجباری + پنل ادمین
+├── downloader.py       # دانلود با yt-dlp
+├── recognizer.py       # تشخیص با shazamio
+├── converter.py        # تبدیل ویدیو به صدا با ffmpeg
+├── playlist_manager.py # مدیریت پلی‌لیست‌ها
+├── quality_manager.py  # مدیریت کیفیت
+├── tag_manager.py      # مدیریت برچسب‌ها
+├── plugin_manager.py   # سیستم پلاگین
+├── locales.py          # ترجمه‌ها
+├── extra_commands.py   # دستورات اضافی
+├── dashboard.py        # داشبورد گرافیکی با Flask
+├── main.py             # ورودی خط فرمان (CLI)
+├── utils.py            # توابع کمکی
 ├── requirements.txt
 ├── .env.example
+├── Dockerfile
+├── docker-compose.yml
 └── README.md
 ```
 
@@ -77,9 +115,9 @@ whatsmusic-bot/
 
 ربات با استفاده از `python-telegram-bot` کار می‌کند و:
 1. عضویت کاربر در کانال اجباری را چک می‌کند.
-2. درخواست دانلود یا تشخیص را پردازش می‌کند.
-3. از `yt-dlp` برای دانلود و `shazamio` برای تشخیص استفاده می‌کند.
-4. آمار کاربران را در SQLite ذخیره می‌کند.
+2. درخواست دانلود، تبدیل یا تشخیص را پردازش می‌کند.
+3. از `yt-dlp` برای دانلود، `shazamio` برای تشخیص و `ffmpeg` برای تبدیل استفاده می‌کند.
+4. آمار کاربران، پلی‌لیست‌ها و برچسب‌ها را در SQLite ذخیره می‌کند.
 
 ## 📄 لایسنس
 

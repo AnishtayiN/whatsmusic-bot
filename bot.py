@@ -16,7 +16,7 @@ from utils import sanitize_filename, extract_platform
 from locales import get_text
 from playlist_manager import PlaylistManager
 from quality_manager import QualityManager
-from extra_commands import set_quality_command, set_lang_command, playlist_command
+from extra_commands import set_quality_command, set_lang_command, playlist_command, tag_command, convert_command
 from plugin_manager import PluginManager
 
 # Load environment
@@ -496,6 +496,8 @@ def main():
     app.add_handler(CommandHandler("set_quality", set_quality_command))
     app.add_handler(CommandHandler("set_lang", set_lang_command))
     app.add_handler(CommandHandler("playlist", playlist_command))
+    app.add_handler(CommandHandler("tag", tag_command))
+    app.add_handler(CommandHandler("convert", convert_command))
 
     # Admin text commands
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_admin))

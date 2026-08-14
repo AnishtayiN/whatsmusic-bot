@@ -5,4 +5,5 @@ tqdm>=4.66.0
 mutagen>=1.47.0
 python-dotenv>=1.0.0
 aiofiles>=23.2.0
-flask>=2.3.0  # برای داشبورد
+flask>=2.3.0
+chart.js (frontend only)
