@@ -1,163 +1,161 @@
 import asyncio
 import subprocess
-import sys
+import json
+import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 
-from utils import sanitize_filename
+from utils import sanitize_filename, ensure_dir
+
 
 class Downloader:
-    def __init__(self, output_dir: str = "downloads", cookies_file: Optional[str] = None):
+    def __init__(self, output_dir: str = "downloads", cookies_file: Optional[str] = None, quiet: bool = False):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.cookies_file = cookies_file
+        self.quiet = quiet
 
-    def _get_ytdlp_cmd(self, url: str, output_path: str, extract_audio: bool = True) -> list:
-        """ساخت دستور yt-dlp"""
-        cmd = [
-            "yt-dlp",
-            "--no-playlist",
-            "--quiet",
-            "--no-warnings",
-        ]
+    def _build_cmd(self, url: str, output_template: str, extract_audio: bool = True,
+                   playlist: bool = False, format_filter: str = None) -> List[str]:
+        cmd = ["yt-dlp", "--no-warnings"]
+
+        if not playlist:
+            cmd.append("--no-playlist")
+
         if self.cookies_file and Path(self.cookies_file).exists():
             cmd.extend(["--cookies", self.cookies_file])
+
         if extract_audio:
+            fmt = format_filter or "mp3"
             cmd.extend([
-                "-x",
-                "--audio-format", "mp3",
+                "-x", "--audio-format", fmt,
                 "--audio-quality", "0",
-                "-o", output_path,
+                "--embed-thumbnail",
+                "--embed-metadata"
             ])
         else:
-            cmd.extend(["-o", output_path])
-        cmd.append(url)
+            if format_filter:
+                cmd.extend(["-f", f"bestvideo[ext={format_filter}]+bestaudio[ext={format_filter}]/best[ext={format_filter}]"])
+            else:
+                cmd.extend(["-f", "bestvideo+bestaudio/best"])
+
+        cmd.extend([
+            "-o", output_template,
+            "--no-cache-dir",
+            "--restrict-filenames",
+            "--print", "after_move:filepath",
+            "--print", "title",
+            url
+        ])
         return cmd
 
-    async def download_audio(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """دانلود فایل صوتی و برگرداندن مسیر فایل و عنوان"""
+    async def download(self, url: str, extract_audio: bool = True,
+                       playlist: bool = False, format_filter: str = None) -> Optional[List[Dict[str, str]]]:
+        """
+        دانلود فایل (صوتی یا ویدیویی) و برگرداندن لیست دیکشنری‌های {filename, title}
+        """
         temp_dir = self.output_dir / "temp"
         temp_dir.mkdir(exist_ok=True)
-        output_template = str(temp_dir / "%(title)s.%(ext)s")
-        
-        # مرحله ۱: دانلود با yt-dlp
-        cmd = [
-            "yt-dlp",
-            "--no-playlist",
-            "--quiet",
-            "--no-warnings",
-            "-o", output_template,
-            url
-        ]
-        if self.cookies_file and Path(self.cookies_file).exists():
-            cmd.extend(["--cookies", self.cookies_file])
-        
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            return None, f"خطا در دانلود: {stderr.decode().strip()}"
-        
-        # پیدا کردن فایل دانلود شده
-        files = list(temp_dir.glob("*"))
-        if not files:
-            return None, "فایلی دانلود نشد"
-        # آخرین فایل تغییر یافته
-        downloaded_file = max(files, key=lambda p: p.stat().st_mtime)
-        
-        # استخراج عنوان از نام فایل
-        title = downloaded_file.stem
-        
-        # مرحله ۲: تبدیل به MP3 اگر نیاز باشد
-        if downloaded_file.suffix.lower() not in ['.mp3', '.m4a', '.aac']:
-            mp3_path = temp_dir / f"{title}.mp3"
-            convert_cmd = [
-                "ffmpeg",
-                "-i", str(downloaded_file),
-                "-acodec", "libmp3lame",
-                "-ab", "192k",
-                "-y",
-                str(mp3_path)
-            ]
-            conv = await asyncio.create_subprocess_exec(
-                *convert_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await conv.communicate()
-            if conv.returncode == 0:
-                downloaded_file.unlink()  # حذف فایل اصلی
-                downloaded_file = mp3_path
-            else:
-                # اگر ffmpeg نبود، همان فایل اصلی را برمی‌گردانیم
-                pass
-        
-        # انتقال به پوشه اصلی با نام تمیز
-        final_name = sanitize_filename(title) + ".mp3"
-        final_path = self.output_dir / final_name
-        counter = 1
-        while final_path.exists():
-            final_name = f"{sanitize_filename(title)}_{counter}.mp3"
-            final_path = self.output_dir / final_name
-            counter += 1
-        
-        downloaded_file.rename(final_path)
-        
-        # حذف پوشه temp
-        try:
-            temp_dir.rmdir()
-        except:
-            pass
-        
-        return str(final_path), title
 
-    async def download_video(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        """دانلود ویدئو (بدون استخراج صدا)"""
-        temp_dir = self.output_dir / "temp_video"
-        temp_dir.mkdir(exist_ok=True)
-        output_template = str(temp_dir / "%(title)s.%(ext)s")
-        
-        cmd = [
-            "yt-dlp",
-            "--no-playlist",
-            "--quiet",
-            "--no-warnings",
-            "-o", output_template,
-            url
-        ]
-        if self.cookies_file and Path(self.cookies_file).exists():
-            cmd.extend(["--cookies", self.cookies_file])
-        
+        # الگوی خروجی با پسوند دلخواه (برای صدا) یا بدون پسوند (برای ویدیو)
+        if extract_audio:
+            ext = format_filter or "mp3"
+            output_template = str(temp_dir / f"%(title)s.{ext}")
+        else:
+            output_template = str(temp_dir / "%(title)s.%(ext)s")
+
+        cmd = self._build_cmd(url, output_template, extract_audio, playlist, format_filter)
+
+        if not self.quiet:
+            print(f"🔧 اجرای: {' '.join(cmd)}")
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await proc.communicate()
+
         if proc.returncode != 0:
-            return None, f"خطا در دانلود ویدئو: {stderr.decode().strip()}"
-        
-        files = list(temp_dir.glob("*"))
-        if not files:
-            return None, "فایلی دانلود نشد"
-        downloaded_file = max(files, key=lambda p: p.st_mtime)
-        
-        # انتقال به پوشه اصلی
-        final_name = sanitize_filename(downloaded_file.stem) + downloaded_file.suffix
-        final_path = self.output_dir / final_name
-        counter = 1
-        while final_path.exists():
-            final_name = f"{sanitize_filename(downloaded_file.stem)}_{counter}{downloaded_file.suffix}"
-            final_path = self.output_dir / final_name
-            counter += 1
-        downloaded_file.rename(final_path)
-        
+            error_msg = stderr.decode('utf-8', errors='ignore')
+            if not self.quiet:
+                print(f"❌ خطا: {error_msg[:200]}")
+            return None
+
+        # پردازش خروجی
+        output_text = stdout.decode('utf-8', errors='ignore')
+        lines = [l.strip() for l in output_text.splitlines() if l.strip()]
+
+        # استخراج مسیر فایل‌ها و عناوین
+        files = []
+        titles = []
+        for line in lines:
+            if line.endswith('.mp3') or line.endswith('.m4a') or line.endswith('.wav') or line.endswith('.flac') or \
+               line.endswith('.mp4') or line.endswith('.webm') or line.endswith('.mkv'):
+                files.append(line)
+            elif not line.startswith('[') and not line.startswith('http'):
+                titles.append(line)
+
+        # اگر تعداد فایل‌ها با عناوین برابر نبود، عناوین را با شماره‌گذاری پر کن
+        if len(files) > len(titles):
+            titles = [f"فایل {i+1}" for i in range(len(files))]
+        elif len(titles) > len(files):
+            titles = titles[:len(files)]
+
+        result = []
+        for f, t in zip(files, titles):
+            src = Path(f)
+            if src.exists():
+                dest = self.output_dir / sanitize_filename(src.name)
+                if src != dest:
+                    src.rename(dest)
+                result.append({"filename": str(dest), "title": t})
+            else:
+                # fallback: جستجوی فایل در temp
+                for p in temp_dir.glob("*"):
+                    if p.suffix in ['.mp3', '.m4a', '.wav', '.flac', '.mp4', '.webm', '.mkv']:
+                        dest = self.output_dir / sanitize_filename(p.name)
+                        p.rename(dest)
+                        result.append({"filename": str(dest), "title": t or p.stem})
+                        break
+
+        # پاک کردن temp
+        import shutil
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        return result if result else None
+
+    async def get_info(self, url: str) -> Optional[Dict[str, Any]]:
+        """گرفتن اطلاعات ویدیو/صوت بدون دانلود"""
+        cmd = [
+            "yt-dlp", "--no-warnings", "--no-playlist",
+            "--dump-json", "--skip-download",
+            url
+        ]
+        if self.cookies_file and Path(self.cookies_file).exists():
+            cmd.extend(["--cookies", self.cookies_file])
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+
+        if proc.returncode != 0:
+            return None
+
         try:
-            temp_dir.rmdir()
+            data = json.loads(stdout.decode('utf-8', errors='ignore'))
+            return {
+                "title": data.get("title"),
+                "duration": data.get("duration"),
+                "uploader": data.get("uploader"),
+                "view_count": data.get("view_count"),
+                "like_count": data.get("like_count"),
+                "thumbnail": data.get("thumbnail"),
+                "webpage_url": data.get("webpage_url")
+            }
         except:
-            pass
-        
-        return str(final_path), downloaded_file.stem
+            return None

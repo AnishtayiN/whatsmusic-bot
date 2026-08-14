@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+downloads/
+*.mp3
+*.m4a
+*.wav
+*.flac
+*.ogg
+*.mp4
+*.webm
+*.mkv
+.env
+cookies.txt
+*.log
+.DS_Store
+.idea/
+.vscode/
