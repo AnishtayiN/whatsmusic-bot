@@ -429,7 +429,7 @@ async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # دانلود از YouTube با جستجو
             import asyncio as _asyncio
-            await _asyncio.sleep(2)  # وقفه برای جلوگیری از rate limiting
+            await _asyncio.sleep(5)  # وقفه برای جلوگیری از rate limiting
             search_query = f"{title} {artist} audio"
             downloader = Downloader(output_dir=DOWNLOAD_DIR)
             result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)

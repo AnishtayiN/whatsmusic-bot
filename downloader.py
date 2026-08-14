@@ -111,8 +111,7 @@ class Downloader:
         import time
         for attempt, (use_cookies, extra_args) in enumerate(strategies):
             # وقفه بین تلاش‌ها برای جلوگیری از rate limiting
-            if attempt > 0:
-                time.sleep(2)
+            time.sleep(3)
             
             cmd = self._build_cmd(url, output_template, extract_audio, playlist, format_filter, is_search, use_cookies)
             # اضافه کردن args اضافی
