@@ -161,7 +161,10 @@ async def require_membership(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_admin(update.effective_user.id):
-            await update.message.reply_text("⛔ این دستور فقط برای ادمین‌هاست.")
+            if update.callback_query:
+                await update.callback_query.answer("⛔ این دستور فقط برای ادمین‌هاست.", show_alert=True)
+            elif update.message:
+                await update.message.reply_text("⛔ این دستور فقط برای ادمین‌هاست.")
             return
         return await func(update, context)
     return wrapper
@@ -282,7 +285,8 @@ async def recognize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.increment_recognize(user.id)
             await update.message.reply_text(recognizer.format_result(result))
         else:
-            await update.message.reply_text(f"❌ تشخیص ناموفق: {result.get('error', 'خطای ناشناخته')}")
+            err = result.get('error', 'خطای ناشناخته') if result else 'نتیجه‌ای یافت نشد'
+            await update.message.reply_text(f"❌ تشخیص ناموفق: {err}")
 
     except Exception as e:
         logger.error(f"Recognize error: {e}")
@@ -340,6 +344,75 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg)
 
+
+async def lyrics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت متن ترانه"""
+    user = update.effective_user
+    if db.is_banned(user.id):
+        await update.message.reply_text("⛔ شما مسدود شده‌اید.")
+        return
+    if not await require_membership(update, context):
+        return
+
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("❗ لطفاً نام خواننده و آهنگ را وارد کنید.\nمثال: /lyrics Eminem Lose Yourself")
+        return
+
+    text = ' '.join(context.args)
+    parts = text.split(' - ', 1)
+    if len(parts) == 2:
+        artist, title = parts[0].strip(), parts[1].strip()
+    else:
+        parts = text.split(' ', 1)
+        artist, title = parts[0].strip(), parts[1].strip() if len(parts) > 1 else ''
+
+    if not artist or not title:
+        await update.message.reply_text("❗ هم نام خواننده و هم نام آهنگ لازمه.")
+        return
+
+    await update.message.reply_text(f"🔍 در حال جستجوی متن ترانه «{title}» از «{artist}»...")
+
+    recognizer = Recognizer()
+    lyrics = await recognizer.get_lyrics(artist, title)
+
+    if lyrics:
+        # Telegram max message length is 4096
+        if len(lyrics) > 4000:
+            lyrics = lyrics[:4000] + "\n\n... [ادامه متن]"
+        await update.message.reply_text(f"📝 **{artist} - {title}**\n\n{lyrics}")
+    else:
+        await update.message.reply_text("❌ متن ترانه یافت نشد.\n\n💡 نکته: نام خواننده و آهنگ رو به انگلیسی وارد کنید.")
+
+# ========== Search Callback ==========
+async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data.startswith('search_'):
+        idx = int(data.replace('search_', ''))
+        results = context.user_data.get('search_results', [])
+        if 0 <= idx < len(results):
+            track = results[idx]
+            title = track.get('title', 'نامشخص')
+            artist = track.get('artist', {}).get('name', 'نامشخص') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
+            await query.edit_message_text(f"🎵 {title}\n👤 {artist}\n\n⬇️ در حال دانلود...")
+
+            # دانلود از YouTube
+            search_query = f"{title} {artist} audio"
+            downloader = Downloader(output_dir=DOWNLOAD_DIR)
+            result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
+            if result and isinstance(result, list) and len(result) > 0:
+                try:
+                    await query.message.reply_document(
+                        document=open(result[0]['filename'], 'rb'),
+                        filename=Path(result[0]['filename']).name
+                    )
+                    await query.edit_message_text(f"✅ {title} - {artist}")
+                except Exception as e:
+                    await query.edit_message_text(f"❌ خطا در ارسال فایل: {str(e)}")
+            else:
+                await query.edit_message_text("❌ دانلود ناموفق بود.")
 # ========== Admin Panel ==========
 @admin_only
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -409,46 +482,50 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == 'admin_close':
         await query.edit_message_text("🔙 پنل بسته شد.")
 
-async def broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('broadcast_mode'):
-        return
-    if update.message.text == '/cancel':
-        context.user_data['broadcast_mode'] = False
-        await update.message.reply_text("❌ ارسال همگانی لغو شد.")
+async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler یکپارچه برای متن‌های ادمین + broadcast + جستجوی آهنگ"""
+    if not update.message or not update.message.text:
         return
 
-    users = db.get_all_users()
-    success = 0
-    for u in users:
-        try:
-            await context.bot.send_message(chat_id=u['user_id'], text=update.message.text)
-            success += 1
-            await asyncio.sleep(0.05)  # avoid flood
-        except:
-            pass
+    user = update.effective_user
+    text = update.message.text.strip()
 
-    await update.message.reply_text(f"✅ پیام برای {success} کاربر ارسال شد.")
-    context.user_data['broadcast_mode'] = False
+    # 1. اگر در حالت broadcast هست، پیام رو بفرست
+    if context.user_data.get('broadcast_mode'):
+        if text == '/cancel':
+            context.user_data['broadcast_mode'] = False
+            await update.message.reply_text("❌ ارسال همگانی لغو شد.")
+            return
+        if is_admin(user.id):
+            users = db.get_all_users()
+            success = 0
+            for u in users:
+                try:
+                    await context.bot.send_message(chat_id=u['user_id'], text=text)
+                    success += 1
+                    await asyncio.sleep(0.05)
+                except:
+                    pass
+            await update.message.reply_text(f"✅ پیام برای {success} کاربر ارسال شد.")
+            context.user_data['broadcast_mode'] = False
+            return
 
-async def handle_text_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Handle ban/unban/set_channel via text
-    if not is_admin(update.effective_user.id):
+    # 2. اگر پیام ادمین نیست، جستجوی آهنگ انجام بده
+    if not is_admin(user.id):
+        # جستجوی خودکار آهنگ با تایپ نام
+        await search_music_inline(update, context)
         return
 
-    text = update.message.text
-    if 'broadcast_mode' in context.user_data and context.user_data['broadcast_mode']:
-        return
-
-    # Detect ban command pattern
+    # 3. دستورات متنی ادمین
     if text.startswith('/ban'):
         parts = text.split()
         if len(parts) < 2:
             await update.message.reply_text("❗ شناسه کاربری را وارد کنید.")
             return
         try:
-            user_id = int(parts[1])
-            db.ban_user(user_id)
-            await update.message.reply_text(f"✅ کاربر {user_id} مسدود شد.")
+            uid = int(parts[1])
+            db.ban_user(uid)
+            await update.message.reply_text(f"✅ کاربر {uid} مسدود شد.")
         except:
             await update.message.reply_text("❌ شناسه نامعتبر.")
 
@@ -458,9 +535,9 @@ async def handle_text_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❗ شناسه کاربری را وارد کنید.")
             return
         try:
-            user_id = int(parts[1])
-            db.unban_user(user_id)
-            await update.message.reply_text(f"✅ کاربر {user_id} رفع مسدودیت شد.")
+            uid = int(parts[1])
+            db.unban_user(uid)
+            await update.message.reply_text(f"✅ کاربر {uid} رفع مسدودیت شد.")
         except:
             await update.message.reply_text("❌ شناسه نامعتبر.")
 
@@ -476,6 +553,35 @@ async def handle_text_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         global CHANNEL_USERNAME
         CHANNEL_USERNAME = channel
         await update.message.reply_text(f"✅ کانال به {channel} تنظیم شد.")
+
+async def search_music_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """جستجوی خودکار آهنگ با تایپ نام در چت"""
+    from recognizer import Recognizer
+    text = update.message.text.strip()
+    if len(text) < 2:
+        return
+
+    await update.message.reply_text(f"🔍 در حال جستجوی «{text}»...")
+
+    recognizer = Recognizer()
+    results = await recognizer.search_track(text, limit=5)
+
+    if not results:
+        await update.message.reply_text("❌ آهنگی یافت نشد.")
+        return
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    buttons = []
+    for i, track in enumerate(results):
+        title = track.get('title', 'نامشخص')
+        artist = track.get('artist', {}).get('name', 'نامشخص') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
+        buttons.append([InlineKeyboardButton(f"🎵 {title} - {artist}", callback_data=f"search_{i}")])
+
+    # ذخیره نتایج برای استفاده در callback
+    context.user_data['search_results'] = results
+
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text(f"🎵 نتایج جستجوی «{text}»:", reply_markup=reply_markup)
 
 # ========== Main ==========
 def main():
@@ -498,15 +604,14 @@ def main():
     app.add_handler(CommandHandler("playlist", playlist_command))
     app.add_handler(CommandHandler("tag", tag_command))
     app.add_handler(CommandHandler("convert", convert_command))
+    app.add_handler(CommandHandler("lyrics", lyrics_command))
 
-    # Admin text commands
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_admin))
-
-    # Callback query
+    # Callback query (admin panel + search results)
     app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
+    app.add_handler(CallbackQueryHandler(search_callback, pattern='^search_'))
 
-    # Broadcast handler
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_handler))
+    # Unified text handler (admin commands + broadcast + music search)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unified_text_handler))
 
     # Start bot
     logger.info("Bot started...")

@@ -16,11 +16,15 @@ class Downloader:
         self.quiet = quiet
 
     def _build_cmd(self, url: str, output_template: str, extract_audio: bool = True,
-                   playlist: bool = False, format_filter: str = None) -> List[str]:
+                   playlist: bool = False, format_filter: str = None, is_search: bool = False) -> List[str]:
         cmd = ["yt-dlp", "--no-warnings"]
 
         if not playlist:
             cmd.append("--no-playlist")
+
+        # جستجوی YouTube اگر URL نباشد
+        if is_search:
+            url = f"ytsearch1:{url}"
 
         if self.cookies_file and Path(self.cookies_file).exists():
             cmd.extend(["--cookies", self.cookies_file])
@@ -50,7 +54,7 @@ class Downloader:
         return cmd
 
     async def download(self, url: str, extract_audio: bool = True,
-                       playlist: bool = False, format_filter: str = None) -> Optional[List[Dict[str, str]]]:
+                       playlist: bool = False, format_filter: str = None, is_search: bool = False) -> Optional[List[Dict[str, str]]]:
         """
         دانلود فایل (صوتی یا ویدیویی) و برگرداندن لیست دیکشنری‌های {filename, title}
         """
@@ -64,7 +68,7 @@ class Downloader:
         else:
             output_template = str(temp_dir / "%(title)s.%(ext)s")
 
-        cmd = self._build_cmd(url, output_template, extract_audio, playlist, format_filter)
+        cmd = self._build_cmd(url, output_template, extract_audio, playlist, format_filter, is_search)
 
         if not self.quiet:
             print(f"🔧 اجرای: {' '.join(cmd)}")

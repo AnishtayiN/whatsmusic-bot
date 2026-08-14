@@ -13,7 +13,7 @@ from pathlib import Path
 
 from downloader import Downloader
 from recognizer import Recognizer
-from utils import ensure_dir, get_platform_audio_player, extract_platform
+from utils import get_platform_audio_player, extract_platform
 
 async def main():
     parser = argparse.ArgumentParser(

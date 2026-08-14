@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 downloads/
+data/
 *.mp3
 *.m4a
 *.wav
@@ -15,3 +16,4 @@ cookies.txt
 .DS_Store
 .idea/
 .vscode/
+.hermes-tmp.*

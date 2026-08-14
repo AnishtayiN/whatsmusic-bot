@@ -29,6 +29,10 @@ LANGUAGES = {
         'no_songs': "این پلی‌لیست خالی است.",
         'invalid_quality': "کیفیت باید 128، 192 یا 320 باشد.",
         'invalid_lang': "زبان باید fa یا en باشد.",
+        'lyrics_not_found': "❌ متن ترانه یافت نشد.",
+        'lyrics_found': "📝 **{artist} - {title}**\n\n{lyrics}",
+        'search_no_results': "❌ آهنگی یافت نشد.",
+        'search_start': "🔍 در حال جستجوی «{query}»...",
         'unknown': "⚠️ خطای ناشناخته."
     },
     'en': {
@@ -59,6 +63,10 @@ LANGUAGES = {
         'no_songs': "This playlist is empty.",
         'invalid_quality': "Quality must be 128, 192, or 320.",
         'invalid_lang': "Language must be fa or en.",
+        'lyrics_not_found': "❌ Lyrics not found.",
+        'lyrics_found': "📝 **{artist} - {title}**\n\n{lyrics}",
+        'search_no_results': "❌ No music found.",
+        'search_start': "🔍 Searching for «{query}»...",
         'unknown': "⚠️ Unknown error."
     }
 }

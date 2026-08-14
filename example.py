@@ -10,7 +10,8 @@ from recognizer import Recognizer
 async def example():
     # ۱. دانلود
     downloader = Downloader(output_dir="music")
-    file_path, title = await downloader.download_audio("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    result = await downloader.download("https://www.youtube.com/watch?v=dQw4w9WgXcQ", extract_audio=True)
+    file_path = result[0]['filename'] if result else None
     
     if file_path:
         print(f"دانلود شد: {file_path}")

@@ -1,6 +1,5 @@
 # converter.py - تبدیل ویدیو به صدا با ffmpeg
 import asyncio
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -20,17 +19,17 @@ class AudioConverter:
         output_name = video_path.stem + f".{output_format}"
         output_path = self.output_dir / output_name
 
-        # اگر فایل خروجی وجود دارد، آن را حذف نکنید، اما می‌توانید با نام جدید ذخیره کنید
         if output_path.exists():
             output_path = self.output_dir / f"{video_path.stem}_converted.{output_format}"
 
+        codec = "libmp3lame" if output_format == "mp3" else "aac" if output_format == "m4a" else "pcm_s16le" if output_format == "wav" else "flac"
         cmd = [
             "ffmpeg",
             "-i", str(video_path),
-            "-vn",  # بدون ویدیو
-            "-acodec", "libmp3lame" if output_format == "mp3" else "aac",
+            "-vn",
+            "-acodec", codec,
             "-ab", f"{quality}k",
-            "-y",  # بازنویسی
+            "-y",
             str(output_path)
         ]
 
@@ -40,18 +39,24 @@ class AudioConverter:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await proc.communicate()
+            await proc.communicate()
             if proc.returncode == 0:
                 return str(output_path)
-            else:
-                return None
+            return None
         except Exception:
             return None
 
-    async def convert_to_audio(self, url: str, quality: int = 192) -> Optional[str]:
+    async def convert_to_audio(self, url: str, quality: int = 192, output_format: str = "mp3") -> Optional[str]:
         """
-        دانلود ویدیو و استخراج صدا با یک مرحله
+        دانلود ویدیو از لینک و استخراج صدا
         """
-        # از yt-dlp برای دانلود و استخراج همزمان استفاده می‌کنیم
-        # اما اینجا فقط تبدیل را انجام می‌دهیم
-        pass
+        from downloader import Downloader
+
+        downloader = Downloader(output_dir=str(self.output_dir))
+        result = await downloader.download(url, extract_audio=False, playlist=False)
+
+        if not result:
+            return None
+
+        video_path = result[0]['filename'] if isinstance(result, list) else result['filename']
+        return await self.extract_audio(video_path, output_format=output_format, quality=quality)

@@ -46,6 +46,29 @@ class Recognizer:
         # برای لینک‌های ویدئو باید ابتدا دانلود کرد
         return None
 
+
+    async def search_track(self, query: str, limit: int = 5):
+        """جستجوی آهنگ با نام"""
+        try:
+            result = await self.shazam.search_track(query, limit=limit)
+            tracks = result.get('tracks', {}).get('hits', [])
+            return tracks
+        except Exception as e:
+            print(f"خطا در جستجو: {e}")
+            return []
+
+    async def get_lyrics(self, artist: str, title: str) -> str:
+        """دریافت متن ترانه از lyrics.ovh (رایگان)"""
+        import urllib.request, urllib.parse, json
+        try:
+            url = f'https://api.lyrics.ovh/v1/{urllib.parse.quote(artist)}/{urllib.parse.quote(title)}'
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            resp = urllib.request.urlopen(req, timeout=15)
+            data = json.loads(resp.read())
+            return data.get('lyrics', '')
+        except Exception:
+            return ''
+
     def format_result(self, data: Dict[str, Any]) -> str:
         """تبدیل نتیجه به متن زیبا"""
         if not data:
