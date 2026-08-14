@@ -188,15 +188,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [InlineKeyboardButton("🔍 جستجوی آهنگ", callback_data="cmd_search")],
-        [InlineKeyboardButton("⬇️ دانلود از لینک", callback_data="cmd_download"),
-         InlineKeyboardButton("🎵 شناسایی آهنگ", callback_data="cmd_recognize")],
-        [InlineKeyboardButton("📝 متن ترانه", callback_data="cmd_lyrics"),
-         InlineKeyboardButton("🎬 تبدیل ویدیو", callback_data="cmd_convert")],
-        [InlineKeyboardButton("📋 اطلاعات ویدیو", callback_data="cmd_info"),
-         InlineKeyboardButton("📊 آمار من", callback_data="cmd_stats")],
-        [InlineKeyboardButton("📂 پلی‌لیست", callback_data="cmd_playlist"),
-         InlineKeyboardButton("🏷️ برچسب‌ها", callback_data="cmd_tag")],
-        [InlineKeyboardButton("⚙️ تنظیمات", callback_data="cmd_settings")],
+        [InlineKeyboardButton("⬇️ دانلود از لینک", callback_data="cmd_download")],
+        [InlineKeyboardButton("🎵 شناسایی آهنگ", callback_data="cmd_recognize")],
+        [InlineKeyboardButton("📝 متن ترانه", callback_data="cmd_lyrics")],
+        [InlineKeyboardButton("🎬 تبدیل ویدیو", callback_data="cmd_convert")],
+        [InlineKeyboardButton("📋 اطلاعات ویدیو", callback_data="cmd_info")],
+        [InlineKeyboardButton("📊 آمار من", callback_data="cmd_stats")],
+        [InlineKeyboardButton("📂 پلی‌لیست", callback_data="cmd_playlist")],
+        [InlineKeyboardButton("🏷️ برچسب‌ها", callback_data="cmd_tag")],
     ]
     if is_admin(user.id):
         keyboard.append([InlineKeyboardButton("👑 پنل ادمین", callback_data="cmd_admin")])
@@ -435,106 +434,150 @@ async def command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    if data == "cmd_search":
+    keyboard_back = [[InlineKeyboardButton("🔙 بازگشت به منو", callback_data="cmd_back")]]
+
+    if data == "cmd_back":
+        # بازگشت به منوی اصلی
+        user = update.effective_user
+        kb = [
+            [InlineKeyboardButton("🔍 جستجوی آهنگ", callback_data="cmd_search")],
+            [InlineKeyboardButton("⬇️ دانلود از لینک", callback_data="cmd_download")],
+            [InlineKeyboardButton("🎵 شناسایی آهنگ", callback_data="cmd_recognize")],
+            [InlineKeyboardButton("📝 متن ترانه", callback_data="cmd_lyrics")],
+            [InlineKeyboardButton("🎬 تبدیل ویدیو", callback_data="cmd_convert")],
+            [InlineKeyboardButton("📋 اطلاعات ویدیو", callback_data="cmd_info")],
+            [InlineKeyboardButton("📊 آمار من", callback_data="cmd_stats")],
+            [InlineKeyboardButton("📂 پلی‌لیست", callback_data="cmd_playlist")],
+            [InlineKeyboardButton("🏷️ برچسب‌ها", callback_data="cmd_tag")],
+        ]
+        if is_admin(user.id):
+            kb.append([InlineKeyboardButton("👑 پنل ادمین", callback_data="cmd_admin")])
+        await query.edit_message_text(
+            f"🎵 سلام {user.first_name}!\n\n"
+            "به ربات تشخیص و دانلود موزیک خوش آمدید.\n\n"
+            "💡 فقط کافیه نام آهنگ رو تایپ کنید!\n"
+            "یا از دکمه‌های زیر استفاده کنید:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    elif data == "cmd_search":
         await query.edit_message_text(
             "🔍 **جستجوی آهنگ**\n\n"
-            "نام آهنگ یا خواننده رو تایپ کنید:\n\n"
+            "نام آهنگ یا خواننده رو مستقیم تایپ کنید:\n\n"
             "💡 مثال:\n"
             "• eminem lose yourself\n"
             "• رضا بهرام گل بیته\n"
-            "• Chester Bennington"
+            "• Chester Bennington\n\n"
+            "⚡ فقط کافیه اسم رو تایپ کنی، نتایج با دکمه اومده!",
+            reply_markup=InlineKeyboardMarkup(keyboard_back)
         )
 
     elif data == "cmd_download":
         await query.edit_message_text(
             "⬇️ **دانلود از لینک**\n\n"
-            "لینک ویدیو رو بفرستید:\n\n"
+            "لینک ویدیو رو با این فرمت بفرست:\n\n"
             "💡 مثال:\n"
-            "/download https://www.youtube.com/watch?v=...\n"
-            "/download https://www.tiktok.com/@user/video/...\n"
-            "/download https://www.instagram.com/reel/..."
+            "`` /download https://www.youtube.com/watch?v=dQw4w9WgXcQ ``\n\n"
+            "📱 پشتیبانی:\n"
+            "• YouTube\n• TikTok\n• Instagram\n• SoundCloud\n• Vimeo\n• + ۱۰۰۰ سایت دیگه",
+            reply_markup=InlineKeyboardMarkup(keyboard_back)
         )
 
     elif data == "cmd_recognize":
         await query.edit_message_text(
-            "🎵 **شناسایی آهنگ**\n\n"
-            "یک فایل صوتی یا ویس بفرستید و روش /recognize بزنید.\n\n"
+            "🎵 **شناسایی آهنگ با Shazam**\n\n"
+            "یک فایل صوتی یا ویس بفرست و روش دستور بزن:\n\n"
             "💡 روش‌ها:\n"
-            "۱. فایل صوتی بفرست + روش /recognize بزن\n"
-            "۲. ویس بفرست + روش /recognize بزن\n"
-            "۳. ریپلای به فایل صوتی با /recognize"
+            "۱. ویس بفرست + روش ``/recognize`` بزن\n"
+            "۲. فایل صوتی بفرست + روش ``/recognize`` بزن\n"
+            "۳. ریپلای به فایل صوتی با ``/recognize``\n\n"
+            "🎯 نتیجه: نام آهنگ، خواننده، آلبوم، لینک",
+            reply_markup=InlineKeyboardMarkup(keyboard_back)
         )
 
     elif data == "cmd_lyrics":
         await query.edit_message_text(
             "📝 **متن ترانه**\n\n"
-            "نام خواننده و آهنگ رو وارد کنید:\n\n"
+            "نام خواننده و آهنگ رو وارد کن:\n\n"
             "💡 مثال:\n"
-            "/lyrics Eminem Lose Yourself\n"
-            "/lyrics رضا بهرام گل بیته"
+            "`` /lyrics Eminem Lose Yourself ``\n"
+            "`` /lyrics رضا بهرام گل بیته ``\n\n"
+            "🌐 زبان‌ها: فارسی، انگلیسی، عربی",
+            reply_markup=InlineKeyboardMarkup(keyboard_back)
         )
 
     elif data == "cmd_convert":
         await query.edit_message_text(
-            "🎬 **تبدیل ویدیو به صدا**\n\n"
-            "لینک ویدیو رو بفرستید:\n\n"
+            "🎬 **تبدیل ویدیو به صدا (MP3)**\n\n"
+            "لینک ویدیو رو با این فرمت بفرست:\n\n"
             "💡 مثال:\n"
-            "/convert https://www.youtube.com/watch?v=..."
+            "`` /convert https://www.youtube.com/watch?v=... ``\n\n"
+            "🎵 خروجی: MP3 با کیفیت بالا",
+            reply_markup=InlineKeyboardMarkup(keyboard_back)
         )
 
     elif data == "cmd_info":
         await query.edit_message_text(
-            "📋 **اطلاعات ویدیو**\n\n"
-            "لینک ویدیو رو بفرستید:\n\n"
+            "📋 **اطلاعات ویدیو/صوت**\n\n"
+            "لینک رو با این فرمت بفرست:\n\n"
             "💡 مثال:\n"
-            "/info https://www.youtube.com/watch?v=..."
+            "`` /info https://www.youtube.com/watch?v=... ``\n\n"
+            "📊 اطلاعات: عنوان، خواننده، مدت، بازدید، لایک",
+            reply_markup=InlineKeyboardMarkup(keyboard_back)
         )
 
     elif data == "cmd_stats":
         user = update.effective_user
-        data_db = db.get_user(user.id)
-        if data_db:
+        user_data = db.get_user(user.id)
+        if user_data:
             msg = (
                 f"📊 **آمار شما**\n\n"
-                f"📥 دانلودها: {data_db.get('download_count', 0)}\n"
-                f"🎵 تشخیص‌ها: {data_db.get('recognize_count', 0)}\n"
-                f"📅 عضویت: {data_db.get('joined_at', 'نامشخص')}\n"
-                f"🕐 آخرین فعالیت: {data_db.get('last_active', 'نامشخص')}"
+                f"📥 دانلودها: {user_data.get('download_count', 0)}\n"
+                f"🎵 تشخیص‌ها: {user_data.get('recognize_count', 0)}\n"
+                f"📅 عضویت: {user_data.get('joined_at', 'نامشخص')}\n"
+                f"🕐 آخرین فعالیت: {user_data.get('last_active', 'نامشخص')}"
             )
         else:
             msg = "❌ آماری یافت نشد."
-        await query.edit_message_text(msg)
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard_back))
 
     elif data == "cmd_playlist":
         await query.edit_message_text(
             "📂 **مدیریت پلی‌لیست**\n\n"
-            "💡 دستورات:\n"
-            "/playlist create <نام> - ایجاد پلی‌لیست\n"
-            "/playlist delete <نام> - حذف پلی‌لیست\n"
-            "/playlist list - نمایش پلی‌لیست‌ها\n"
-            "/playlist show <نام> - نمایش آهنگ‌ها"
+            "💡 دستورات:\n\n"
+            "`` /playlist create <نام> `` — ایجاد پلی‌لیست\n"
+            "`` /playlist delete <نام> `` — حذف پلی‌لیست\n"
+            "`` /playlist list `` — نمایش پلی‌لیست‌ها\n"
+            "`` /playlist show <نام> `` — نمایش آهنگ‌ها",
+            reply_markup=InlineKeyboardMarkup(keyboard_back)
         )
 
     elif data == "cmd_tag":
         await query.edit_message_text(
             "🏷️ **مدیریت برچسب‌ها**\n\n"
-            "💡 دستورات:\n"
-            "/tag add <song_id> <tag> - افزودن برچسب\n"
-            "/tag remove <song_id> <tag> - حذف برچسب\n"
-            "/tag list - نمایش برچسب‌ها\n"
-            "/tag search <tag> - جستجو با برچسب"
-        )
-
-    elif data == "cmd_settings":
-        await query.edit_message_text(
-            "⚙️ **تنظیمات**\n\n"
-            "💡 دستورات:\n"
-            "/set_quality 128|192|320 - تنظیم کیفیت\n"
-            "/set_lang fa|en - تغییر زبان"
+            "💡 دستورات:\n\n"
+            "`` /tag add <song_id> <tag> `` — افزودن برچسب\n"
+            "`` /tag remove <song_id> <tag> `` — حذف برچسب\n"
+            "`` /tag list `` — نمایش برچسب‌ها\n"
+            "`` /tag search <tag> `` — جستجو با برچسب",
+            reply_markup=InlineKeyboardMarkup(keyboard_back)
         )
 
     elif data == "cmd_admin":
-        await query.edit_message_text("👑 **پنل ادمین**\n\nبرای باز کردن پنل ادمین /admin بزنید.")
+        user = update.effective_user
+        if not is_admin(user.id):
+            await query.edit_message_text("⛔ فقط ادمین‌ها دسترسی دارند.")
+            return
+        kb = [
+            [InlineKeyboardButton("📊 آمار کلی", callback_data='admin_stats')],
+            [InlineKeyboardButton("📢 ارسال همگانی", callback_data='admin_broadcast')],
+            [InlineKeyboardButton("👥 لیست کاربران", callback_data='admin_users')],
+            [InlineKeyboardButton("🚫 مسدود کردن", callback_data='admin_ban')],
+            [InlineKeyboardButton("✅ رفع مسدودیت", callback_data='admin_unban')],
+            [InlineKeyboardButton("📌 تنظیم کانال", callback_data='admin_set_channel')],
+            [InlineKeyboardButton("🔙 بازگشت به منو", callback_data="cmd_back")],
+        ]
+        await query.edit_message_text("👑 **پنل مدیریت**", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
 # ========== Search Callback ==========
 async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
