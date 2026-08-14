@@ -242,7 +242,12 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Download error: {e}")
-        await update.message.reply_text(f"❌ خطا در دانلود: {str(e)}")
+        # ارسال لینک به عنوان fallback
+        url = context.args[0] if context.args else ''
+        if 'youtube.com' in url or 'youtu.be' in url:
+            await update.message.reply_text(f"❌ خطا در دانلود.\n\n🔗 لینک مستقیم:\n{url}\n\n💡 لینک رو کپی کن و در مرورگر باز کن.")
+        else:
+            await update.message.reply_text(f"❌ خطا در دانلود: {str(e)}")
 
 async def recognize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -445,7 +450,11 @@ async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     await query.edit_message_text(f"❌ خطا در ارسال فایل: {str(e)}")
             else:
-                await query.edit_message_text("❌ دانلود ناموفق بود.")
+                url = track.get('url', '')
+                if url:
+                    await query.edit_message_text(f"❌ دانلود مستقیم ناموفق بود.\n\n🔗 لینک دستی:\n{url}\n\n💡 لینک رو کپی کن و در مرورگر باز کن.")
+                else:
+                    await query.edit_message_text("❌ دانلود ناموفق بود.")
 # ========== Admin Panel ==========
 @admin_only
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
