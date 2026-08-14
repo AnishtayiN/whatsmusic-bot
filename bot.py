@@ -152,10 +152,14 @@ async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def require_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if await check_membership(update, context):
         return True
-    await update.message.reply_text(
+    msg = (
         f"❗ برای استفاده از ربات ابتدا در کانال {CHANNEL_USERNAME} عضو شوید.\n"
         "پس از عضویت، دوباره امتحان کنید."
     )
+    if update.callback_query:
+        await update.callback_query.answer(msg, show_alert=True)
+    elif update.message:
+        await update.message.reply_text(msg)
     return False
 
 def admin_only(func):
@@ -240,16 +244,18 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if isinstance(result, list):
             for r in result:
-                await update.message.reply_audio(audio=open(r['filename'], 'rb'), filename=Path(r['filename']).name)
+                fpath = Path(r['filename'])
+                if fpath.exists():
+                    await update.message.reply_audio(audio=open(fpath, 'rb'), filename=fpath.name)
+            db.increment_download(user.id)
+        elif isinstance(result, dict):
+            fpath = Path(result.get('filename', ''))
+            if fpath.exists():
+                await update.message.reply_audio(audio=open(fpath, 'rb'), filename=fpath.name)
             db.increment_download(user.id)
         else:
-            await update.message.reply_audio(audio=open(result['filename'], 'rb'), filename=Path(result['filename']).name)
-            db.increment_download(user.id)
-
-            if update.message.text and '--recognize' in update.message.text:
-                # trigger recognize automatically if flag present (optional)
-                pass
-
+            await update.message.reply_text("❌ دانلود ناموفق بود.")
+            return
     except Exception as e:
         logger.error(f"Download error: {e}")
         # ارسال لینک به عنوان fallback
@@ -448,6 +454,8 @@ async def command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🎬 تبدیل ویدیو", callback_data="cmd_convert")],
             [InlineKeyboardButton("📋 اطلاعات ویدیو", callback_data="cmd_info")],
             [InlineKeyboardButton("📊 آمار من", callback_data="cmd_stats")],
+            [InlineKeyboardButton("📂 پلی‌لیست", callback_data="cmd_playlist")],
+            [InlineKeyboardButton("🏷️ برچسب‌ها", callback_data="cmd_tag")],
         ]
         if is_admin(user.id):
             kb.append([InlineKeyboardButton("👑 پنل ادمین", callback_data="cmd_admin")])
@@ -586,6 +594,8 @@ async def command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== Voice/Audio Auto-Recognize Handler ==========
 async def audio_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """وقتی کاربر ویس یا فایل صوتی می‌فرسته، خودکار تشخیص بده (اگر state=recognize)"""
+    if not update.message:
+        return
     user = update.effective_user
     if db.is_banned(user.id):
         return
@@ -652,37 +662,109 @@ async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data.startswith('search_'):
-        idx = int(data.replace('search_', ''))
+        try:
+            idx = int(data.replace('search_', ''))
+        except (ValueError, IndexError):
+            await query.answer("❌ خطا در انتخاب", show_alert=True)
+            return
         results = context.user_data.get('search_results', [])
-        if 0 <= idx < len(results):
+        if not results or idx < 0 or idx >= len(results):
+            await query.answer("❌ نتیجه یافت نشد", show_alert=True)
+            return
+        try:
             track = results[idx]
             title = track.get('title', 'نامشخص')
             artist = track.get('artist', {}).get('name', 'نامشخص') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
             await query.edit_message_text(f"🎵 {title}\n👤 {artist}\n\n⬇️ در حال دانلود...")
 
             # دانلود از YouTube با جستجو
-            import asyncio as _asyncio
-            await _asyncio.sleep(5)  # وقفه برای جلوگیری از rate limiting
+            await asyncio.sleep(5)  # وقفه برای جلوگیری از rate limiting
             search_query = f"{title} {artist} audio"
             downloader = Downloader(output_dir=DOWNLOAD_DIR)
-            result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
-            if result and isinstance(result, list) and len(result) > 0:
+            try:
+                dl_result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
+            except Exception as e:
+                logger.error(f"Search download error: {e}")
+                dl_result = None
+            if dl_result and isinstance(dl_result, list) and len(dl_result) > 0:
                 try:
-                    await query.message.reply_audio(
-                        audio=open(result[0]['filename'], 'rb'),
-                        title=title,
-                        performer=artist,
-                        filename=Path(result[0]['filename']).name
-                    )
-                    await query.edit_message_text(f"✅ {title} - {artist}")
+                    fpath = Path(dl_result[0]['filename'])
+                    if fpath.exists():
+                        await query.message.reply_audio(
+                            audio=open(fpath, 'rb'),
+                            title=title,
+                            performer=artist,
+                            filename=fpath.name
+                        )
+                        await query.edit_message_text(f"✅ {title} - {artist}")
+                    else:
+                        raise FileNotFoundError("فایل پیدا نشد")
                 except Exception as e:
                     await query.edit_message_text(f"❌ خطا در ارسال فایل: {str(e)}")
             else:
-                url = track.get('url', '')
+                url = track.get('url', '') if isinstance(track, dict) else ''
                 if url:
                     await query.edit_message_text(f"❌ دانلود مستقیم ناموفق بود.\n\n🔗 لینک دستی:\n{url}\n\n💡 لینک رو کپی کن و در مرورگر باز کن.")
                 else:
                     await query.edit_message_text("❌ دانلود ناموفق بود.")
+        except Exception as e:
+            logger.error(f"Search callback error: {e}")
+            await query.edit_message_text("❌ خطای غیرمنتظره در پردازش نتیجه.")
+# ========== Recognition Download Callback ==========
+async def recognition_download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دانلود آهنگ شناسایی شده با Shazam"""
+    query = update.callback_query
+    await query.answer()
+
+    # دریافت اطلاعات از پیام قبلی
+    msg = query.message.text or ""
+    title_line = msg.split("\n")[0] if msg else ""
+    title = title_line.replace("🎵 ", "").strip() or "unknown"
+
+    # جستجو و دانلود
+    await query.edit_message_text(f"🔍 در حال دانلود «{title}»...")
+
+    try:
+        recognizer = Recognizer()
+        results = await recognizer.search_track(title, limit=1)
+        if not results:
+            url = "https://www.youtube.com/results?search_query=" + title.replace(" ", "+")
+            await query.edit_message_text(
+                f"❌ دانلود ناموفق بود.\n\n🔗 لینک دستی:\n{url}\n\n💡 لینک رو کپی کن و در مرورگر باز کن."
+            )
+            return
+
+        track = results[0]
+        search_title = track.get('title', title)
+        artist = track.get('artist', {}).get('name', '') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
+        search_query = f"{search_title} {artist} audio"
+
+        await asyncio.sleep(3)
+        downloader = Downloader(output_dir=DOWNLOAD_DIR)
+        try:
+            dl_result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
+        except Exception as e:
+            logger.error(f"Recognition download error: {e}")
+            dl_result = None
+
+        if dl_result and isinstance(dl_result, list) and len(dl_result) > 0:
+            fpath = Path(dl_result[0]['filename'])
+            if fpath.exists():
+                await query.message.reply_audio(
+                    audio=open(fpath, 'rb'),
+                    title=search_title,
+                    performer=artist,
+                    filename=fpath.name
+                )
+                await query.edit_message_text(f"✅ {search_title} - {artist}")
+                return
+        await query.edit_message_text(
+            f"❌ دانلود ناموفق بود.\n\n🔗 لینک دستی:\nhttps://www.youtube.com/results?search_query={title.replace(' ', '+')}\n\n💡 لینک رو کپی کن و در مرورگر باز کن."
+        )
+    except Exception as e:
+        logger.error(f"Recognition download callback error: {e}")
+        await query.edit_message_text("❌ خطا در دانلود.")
+
 # ========== Admin Panel ==========
 @admin_only
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -825,21 +907,41 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     state = context.user_data.get('state')
 
     if state == 'download':
-        await download_command(update, context)
-        context.user_data['state'] = None
+        # چک کن آیا متن واقعاً لینک هست
+        if not extract_platform(text).startswith(('Unknown', 'Spotify')):
+            context.args = [text]
+            context.user_data['state'] = None
+            await download_command(update, context)
+        else:
+            # متن لینک نیست → جستجو کن
+            context.user_data['state'] = None
+            await update.message.reply_text("🔍 به نظر لینک نیست! دارم جستجو میکنم...")
+            await search_music_inline(update, context)
         return
     elif state == 'lyrics':
         context.args = text.split()
-        await lyrics_command(update, context)
         context.user_data['state'] = None
+        await lyrics_command(update, context)
         return
     elif state == 'convert':
-        await convert_command(update, context)
-        context.user_data['state'] = None
+        if '://' in text or extract_platform(text) != 'Unknown':
+            context.args = [text]
+            context.user_data['state'] = None
+            await convert_command(update, context)
+        else:
+            context.user_data['state'] = None
+            await update.message.reply_text("🎬 لطفاً یک لینک ویدیو بفرستید.\nیا برای جستجوی آهنگ، فقط اسمش رو تایپ کنید.")
+            await search_music_inline(update, context)
         return
     elif state == 'info':
-        await info_command(update, context)
-        context.user_data['state'] = None
+        if '://' in text or extract_platform(text) != 'Unknown':
+            context.args = [text]
+            context.user_data['state'] = None
+            await info_command(update, context)
+        else:
+            context.user_data['state'] = None
+            await update.message.reply_text("📋 لطفاً یک لینک بفرستید.\nیا برای جستجوی آهنگ، فقط اسمش رو تایپ کنید.")
+            await search_music_inline(update, context)
         return
     elif state == 'recognize':
         # کاربر باید فایل بفرسته نه متن
@@ -861,6 +963,8 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def search_music_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """جستجوی خودکار آهنگ با تایپ نام در چت"""
+    if not update.message or not update.message.text:
+        return
     from recognizer import Recognizer
     text = update.message.text.strip()
     if len(text) < 2:
@@ -914,6 +1018,7 @@ def main():
     # Callback query (admin panel + search results + commands)
     app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
     app.add_handler(CallbackQueryHandler(search_callback, pattern='^search_'))
+    app.add_handler(CallbackQueryHandler(recognition_download_callback, pattern='^dl_search$'))
     app.add_handler(CallbackQueryHandler(command_callback, pattern='^cmd_'))
 
     # تشخیص خودکار ویس/فایل صوتی

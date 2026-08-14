@@ -1,6 +1,7 @@
 import asyncio
 import subprocess
 import json
+import os
 import re
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
@@ -18,7 +19,8 @@ class Downloader:
     def _build_cmd(self, url: str, output_template: str, extract_audio: bool = True,
                    playlist: bool = False, format_filter: str = None, is_search: bool = False,
                    use_cookies: bool = False) -> List[str]:
-        cmd = ["yt-dlp", "--no-warnings", "--no-check-certificates",
+        ytdlp_path = os.environ.get('YTDLP_PATH', 'yt-dlp')
+        cmd = [ytdlp_path, "--no-warnings", "--no-check-certificates",
                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"]
 
         if not playlist:
@@ -108,10 +110,9 @@ class Downloader:
         if self.cookies_file and Path(self.cookies_file).exists():
             strategies.insert(0, (True, []))
 
-        import time
         for attempt, (use_cookies, extra_args) in enumerate(strategies):
             # وقفه بین تلاش‌ها برای جلوگیری از rate limiting
-            time.sleep(3)
+            await asyncio.sleep(3)
             
             cmd = self._build_cmd(url, output_template, extract_audio, playlist, format_filter, is_search, use_cookies)
             # اضافه کردن args اضافی
@@ -166,8 +167,9 @@ class Downloader:
 
     async def get_info(self, url: str) -> Optional[Dict[str, Any]]:
         """گرفتن اطلاعات ویدیو/صوت بدون دانلود"""
+        ytdlp_path = os.environ.get('YTDLP_PATH', 'yt-dlp')
         cmd = [
-            "yt-dlp", "--no-warnings", "--no-playlist",
+            ytdlp_path, "--no-warnings", "--no-playlist",
             "--dump-json", "--skip-download",
             url
         ]

@@ -51,8 +51,9 @@ class Recognizer:
         """جستجوی آهنگ با نام از YouTube"""
         import asyncio
         try:
+            ytdlp_path = os.environ.get('YTDLP_PATH', 'yt-dlp')
             cmd = [
-                "yt-dlp", "--no-warnings", "--no-playlist", "--no-check-certificates",
+                ytdlp_path, "--no-warnings", "--no-playlist", "--no-check-certificates",
                 "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 f"ytsearch{limit}:{query}",
                 "--flat-playlist",

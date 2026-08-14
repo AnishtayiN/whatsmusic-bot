@@ -1,3 +1,4 @@
+from pathlib import Path
 from telegram import Update
 from telegram.ext import ContextTypes
 from locales import get_text
@@ -130,7 +131,7 @@ async def tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "list":
         tags = tag_mgr.get_all_tags(user_id)
         if not tags:
-            await update.message.reply_text("🏷️ شما هیچ برچس��ی ندارید.")
+            await update.message.reply_text("🏷️ شما هیچ برچسبی ندارید.")
         else:
             await update.message.reply_text("🏷️ برچسب‌های شما:\n" + "\n".join(tags))
 
