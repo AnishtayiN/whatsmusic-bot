@@ -48,11 +48,39 @@ class Recognizer:
 
 
     async def search_track(self, query: str, limit: int = 5):
-        """جستجوی آهنگ با نام"""
+        """جستجوی آهنگ با نام از YouTube"""
+        import asyncio
         try:
-            result = await self.shazam.search_track(query, limit=limit)
-            tracks = result.get('tracks', {}).get('hits', [])
-            return tracks
+            cmd = [
+                "yt-dlp", "--no-warnings", "--no-playlist", "--no-check-certificates",
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                f"ytsearch{limit}:{query}",
+                "--flat-playlist",
+                "--print", "%(title)s|||%(url)s"
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            
+            results = []
+            for line in stdout.decode('utf-8', errors='ignore').splitlines():
+                if '|||' in line:
+                    title, url = line.split('|||', 1)
+                    # استخراج نام آهنگ و خواننده
+                    parts = title.split(' - ', 1)
+                    if len(parts) == 2:
+                        artist, song = parts
+                    else:
+                        artist, song = 'نامشخص', title
+                    results.append({
+                        'title': song.strip(),
+                        'artist': {'name': artist.strip()},
+                        'url': url.strip()
+                    })
+            return results
         except Exception as e:
             print(f"خطا در جستجو: {e}")
             return []

@@ -254,30 +254,61 @@ async def recognize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_membership(update, context):
         return
 
-    if not update.message.reply_to_message or not update.message.reply_to_message.document:
-        await update.message.reply_text("❗ لطفاً به یک فایل صوتی پاسخ دهید.\nمثال: /recognize در پاسخ به فایل mp3")
-        return
+    # پشتیبانی از: ریپلای به فایل صوتی + ویس مستقیم + ویدیوی صوتی
+    target_msg = update.message
+    file = None
+    file_name = "audio.ogg"
 
-    file = update.message.reply_to_message.document
-    if not file.file_name.lower().endswith(('.mp3', '.m4a', '.wav', '.flac', '.ogg')):
-        await update.message.reply_text("❗ لطفاً یک فایل صوتی معتبر ارسال کنید.")
+    # حالت ۱: ریپلای به فایل صوتی
+    if update.message.reply_to_message:
+        replied = update.message.reply_to_message
+        if replied.document:
+            file = replied.document
+            file_name = file.file_name or "audio.ogg"
+        elif replied.audio:
+            file = replied.audio
+            file_name = file.file_name or f"audio_{replied.message_id}.mp3"
+        elif replied.voice:
+            file = replied.voice
+            file_name = f"voice_{replied.message_id}.ogg"
+        elif replied.video:
+            file = replied.video
+            file_name = f"video_{replied.message_id}.mp4"
+    # حالت ۲: فایل صوتی مستقیم
+    elif update.message.document:
+        file = update.message.document
+        file_name = file.file_name or "audio.ogg"
+    elif update.message.audio:
+        file = update.message.audio
+        file_name = file.file_name or f"audio_{update.message.message_id}.mp3"
+    elif update.message.voice:
+        file = update.message.voice
+        file_name = f"voice_{update.message.message_id}.ogg"
+    elif update.message.video:
+        file = update.message.video
+        file_name = f"video_{update.message.message_id}.mp4"
+
+    if not file:
+        await update.message.reply_text(
+            "❗ لطفاً یک فایل صوتی ارسال کنید یا به آن ریپلای کنید.\n\n"
+            "🎯 روش‌ها:\n"
+            "۱. فایل صوتی بفرست + روش /recognize بزن\n"
+            "۲. ویس بفرست + روش /recognize بزن\n"
+            "۳. ریپلای به فایل صوتی با /recognize"
+        )
         return
 
     db.update_activity(user.id)
-
     await update.message.reply_text("🔍 در حال تشخیص موزیک با Shazam...")
 
     try:
-        # Download file
         file_obj = await file.get_file()
-        file_path = Path(DOWNLOAD_DIR) / f"temp_{user.id}_{file.file_name}"
+        file_path = Path(DOWNLOAD_DIR) / f"temp_{user.id}_{file_name}"
         await file_obj.download_to_drive(file_path)
 
-        # Recognize
         recognizer = Recognizer()
         result = await recognizer.recognize_file(str(file_path))
 
-        # Cleanup
         if file_path.exists():
             file_path.unlink()
 
@@ -398,10 +429,15 @@ async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             artist = track.get('artist', {}).get('name', 'نامشخص') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
             await query.edit_message_text(f"🎵 {title}\n👤 {artist}\n\n⬇️ در حال دانلود...")
 
-            # دانلود از YouTube
-            search_query = f"{title} {artist} audio"
-            downloader = Downloader(output_dir=DOWNLOAD_DIR)
-            result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
+            # دانلود از YouTube با لینک مستقیم
+            url = track.get('url', '')
+            if not url:
+                search_query = f"{title} {artist} audio"
+                downloader = Downloader(output_dir=DOWNLOAD_DIR)
+                result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
+            else:
+                downloader = Downloader(output_dir=DOWNLOAD_DIR)
+                result = await downloader.download(url, extract_audio=True, playlist=False)
             if result and isinstance(result, list) and len(result) > 0:
                 try:
                     await query.message.reply_document(
@@ -510,13 +546,7 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             context.user_data['broadcast_mode'] = False
             return
 
-    # 2. اگر پیام ادمین نیست، جستجوی آهنگ انجام بده
-    if not is_admin(user.id):
-        # جستجوی خودکار آهنگ با تایپ نام
-        await search_music_inline(update, context)
-        return
-
-    # 3. دستورات متنی ادمین
+    # 2. دستورات متنی ادمین (فقط اگه با / شروع بشه)
     if text.startswith('/ban'):
         parts = text.split()
         if len(parts) < 2:
@@ -553,6 +583,9 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         global CHANNEL_USERNAME
         CHANNEL_USERNAME = channel
         await update.message.reply_text(f"✅ کانال به {channel} تنظیم شد.")
+    else:
+        # هر متن دیگه‌ای → جستجوی آهنگ
+        await search_music_inline(update, context)
 
 async def search_music_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """جستجوی خودکار آهنگ با تایپ نام در چت"""
