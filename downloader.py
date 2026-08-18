@@ -16,12 +16,16 @@ USER_AGENT = (
     'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 )
 
-# YouTube client strategies to try in order (cookies flag, extra args)
+# YouTube client strategies to try in order (cookies flag, extra args).
+# "default" (no extractor-args) is tried first as it combines multiple clients
+# internally and is the most reliable; specific clients are fallbacks for
+# bot-detection / rate-limiting workarounds.
 _YT_STRATEGIES = [
+    (False, []),
+    (False, ['--extractor-args', 'youtube:player_client=default']),
     (False, ['--extractor-args', 'youtube:player_client=web']),
     (False, ['--extractor-args', 'youtube:player_client=tv_embedded']),
     (False, ['--extractor-args', 'youtube:player_client=android']),
-    (False, []),
 ]
 
 
@@ -60,7 +64,8 @@ class Downloader:
 
         if extract_audio:
             fmt = format_filter or 'mp3'
-            cmd.extend(['-f', 'bestaudio/best', '-x',
+            # ba/b = bestaudio, falling back to best (more reliable than bestaudio/best)
+            cmd.extend(['-f', 'ba/b', '-x',
                         '--audio-format', fmt, '--audio-quality', '0',
                         '--embed-metadata'])
         else:
