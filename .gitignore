@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 downloads/
 data/
+plugins/*
+!plugins/.gitkeep
 *.mp3
 *.m4a
 *.wav

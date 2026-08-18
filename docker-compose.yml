@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   bot:
     build: .
@@ -10,5 +8,25 @@ services:
     volumes:
       - ./data:/app/data
       - ./downloads:/app/downloads
+      - ./plugins:/app/plugins
+    environment:
+      - TZ=Asia/Tehran
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; assert os.getenv('BOT_TOKEN')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+  dashboard:
+    build: .
+    container_name: whatsmusic-dashboard
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["python", "dashboard.py"]
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "5000:5000"
     environment:
       - TZ=Asia/Tehran

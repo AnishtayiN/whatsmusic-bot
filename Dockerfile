@@ -1,21 +1,25 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# System dependencies (ffmpeg for audio conversion)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install
+# Install Python dependencies first for better layer caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY . .
 
-# Create data directory
-RUN mkdir -p data downloads
+# Create runtime directories
+RUN mkdir -p data downloads plugins
+
+# Non-root user for security
+RUN useradd -m botuser && chown -R botuser:botuser /app
+USER botuser
 
 # Run bot
 CMD ["python", "bot.py"]

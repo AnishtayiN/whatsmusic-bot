@@ -1,45 +1,48 @@
-# dashboard.py - داشبورد گرافیکی با Flask و نمودارها
-import sqlite3
-from pathlib import Path
-from flask import Flask, render_template_string, jsonify
-import json
+"""dashboard.py - Simple Flask dashboard with statistics charts."""
+import logging
 import os
+from pathlib import Path
 
+from flask import Flask, render_template_string, jsonify
+
+from db import DB
+
+logger = logging.getLogger(__name__)
 app = Flask(__name__)
+
 DB_PATH = os.getenv('DB_PATH', 'data/users.db')
+_db = DB(DB_PATH)
+
 
 def get_stats():
-    """دریافت آمار از دیتابیس"""
-    if not Path(DB_PATH).exists():
-        return {"total_users": 0, "downloads": 0, "recognizes": 0, "banned": 0}
+    """Aggregate statistics from the database."""
+    stats = _db.get_stats()
+    # Daily new users for the last 10 days
+    import sqlite3
+    daily = []
+    if Path(DB_PATH).exists():
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute('''
+                    SELECT date(joined_at) as day, COUNT(*) as count
+                    FROM users
+                    WHERE joined_at >= date('now', '-10 days')
+                    GROUP BY date(joined_at)
+                    ORDER BY day
+                ''').fetchall()
+                daily = [{'day': r['day'], 'count': r['count']} for r in rows]
+        except sqlite3.Error as e:
+            logger.error(f'Dashboard daily stats error: {e}')
 
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        # تعداد کاربران
-        total = conn.execute('SELECT COUNT(*) as count FROM users').fetchone()['count']
-        # تعداد مسدودها
-        banned = conn.execute('SELECT COUNT(*) as count FROM users WHERE is_banned=1').fetchone()['count']
-        # جمع دانلودها
-        downloads = conn.execute('SELECT SUM(download_count) as total FROM users').fetchone()['total'] or 0
-        # جمع تشخیص‌ها
-        recognizes = conn.execute('SELECT SUM(recognize_count) as total FROM users').fetchone()['total'] or 0
+    return {
+        'total_users': stats['total'],
+        'banned': stats['banned'],
+        'downloads': stats['downloads'],
+        'recognizes': stats['recognizes'],
+        'daily': daily,
+    }
 
-        # آمار روزانه (۱۰ روز اخیر)
-        daily = conn.execute('''
-            SELECT date(joined_at) as day, COUNT(*) as count
-            FROM users
-            WHERE joined_at >= date('now', '-10 days')
-            GROUP BY date(joined_at)
-            ORDER BY day
-        ''').fetchall()
-
-        return {
-            "total_users": total,
-            "banned": banned,
-            "downloads": downloads,
-            "recognizes": recognizes,
-            "daily": [{"day": row['day'], "count": row['count']} for row in daily]
-        }
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -80,9 +83,8 @@ HTML_TEMPLATE = '''
             <div class="stat-card"><div class="number">${data.total_users}</div><div class="label">👥 کاربران</div></div>
             <div class="stat-card"><div class="number">${data.downloads}</div><div class="label">📥 دانلودها</div></div>
             <div class="stat-card"><div class="number">${data.recognizes}</div><div class="label">🎵 تشخیص‌ها</div></div>
-            <div class="stat-card"><div class="number">${data.banned}</div><div class="label">🚫 مسدودشده</div></div>
+            <div class="stat-card"><div class="number">${data.banned}</div><div class="label">⛔ مسدودشده</div></div>
         `;
-        // Update chart
         const labels = data.daily.map(d => d.day);
         const values = data.daily.map(d => d.count);
         if (window.dailyChart) {
@@ -118,13 +120,16 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
+
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
 
+
 @app.route('/api/stats')
 def stats_api():
     return jsonify(get_stats())
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
