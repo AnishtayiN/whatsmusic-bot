@@ -1,110 +1,142 @@
+"""recognizer.py - Music recognition with Shazam, track search and lyrics."""
 import asyncio
 import json
+import logging
 import os
-from typing import Optional, Dict, Any
+import urllib.parse
+from typing import Optional, Dict, Any, List
 
 from shazamio import Shazam
 
+logger = logging.getLogger(__name__)
+
+USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+)
+
+
 class Recognizer:
+    """Recognize music from audio files and search for tracks."""
+
     def __init__(self):
         self.shazam = Shazam()
 
     async def recognize_file(self, file_path: str) -> Optional[Dict[str, Any]]:
-        """تشخیص موزیک از فایل صوتی"""
-        if not os.path.exists(file_path):
+        """Recognize a track from a local audio file via Shazam."""
+        if not file_path or not os.path.exists(file_path):
             return None
-        
+
         try:
-            # تشخیص با Shazamio
             result = await self.shazam.recognize_song(file_path)
-            if not result:
-                return None
-            
-            # استخراج اطلاعات مفید
-            track = result.get('track', {})
-            if not track:
-                return None
-            
-            return {
-                'title': track.get('title', 'نامشخص'),
-                'subtitle': track.get('subtitle', 'خواننده نامشخص'),
-                'artists': [track.get('subtitle', '')],
-                'album': track.get('sections', [{}])[0].get('metadata', [{}])[0].get('text', ''),
-                'genre': track.get('genres', {}).get('primary', ''),
-                'release_date': track.get('release-date', ''),
-                'coverart': track.get('images', {}).get('coverart', ''),
-                'url': track.get('url', ''),
-                'shazam_id': track.get('key', '')
-            }
         except Exception as e:
-            print(f"خطا در تشخیص: {e}")
+            logger.error(f'Shazam recognition error: {e}')
             return None
 
-    async def recognize_from_url(self, url: str) -> Optional[Dict[str, Any]]:
-        """تشخیص موزیک از URL (با دانلود موقت)"""
-        # این متد فقط برای لینک‌های مستقیم فایل صوتی کار می‌کند
-        # برای لینک‌های ویدئو باید ابتدا دانلود کرد
-        return None
+        if not result:
+            return None
 
+        track = result.get('track', {})
+        if not track:
+            return None
 
-    async def search_track(self, query: str, limit: int = 5):
-        """جستجوی آهنگ با نام از YouTube"""
-        import asyncio
+        metadata = track.get('sections', [{}])[0].get('metadata', []) if track.get('sections') else []
+        album = metadata[0].get('text', '') if metadata else ''
+
+        return {
+            'title': track.get('title', 'نامشخص'),
+            'subtitle': track.get('subtitle', 'خواننده نامشخص'),
+            'artists': [track.get('subtitle', '')],
+            'album': album,
+            'genre': track.get('genres', {}).get('primary', ''),
+            'release_date': track.get('release-date', ''),
+            'coverart': track.get('images', {}).get('coverart', ''),
+            'url': track.get('url', ''),
+            'shazam_id': track.get('key', ''),
+        }
+
+    async def search_track(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Search for tracks on YouTube using yt-dlp's flat-playlist search."""
+        if not query or not query.strip():
+            return []
+        query = query.strip()
+
+        ytdlp_path = os.environ.get('YTDLP_PATH', 'yt-dlp')
+        cmd = [
+            ytdlp_path, '--no-warnings', '--no-playlist', '--no-check-certificates',
+            '--user-agent', USER_AGENT,
+            f'ytsearch{limit}:{query}',
+            '--flat-playlist',
+            '--print', '%(title)s|||%(url)s',
+        ]
+
         try:
-            ytdlp_path = os.environ.get('YTDLP_PATH', 'yt-dlp')
-            cmd = [
-                ytdlp_path, "--no-warnings", "--no-playlist", "--no-check-certificates",
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                f"ytsearch{limit}:{query}",
-                "--flat-playlist",
-                "--print", "%(title)s|||%(url)s"
-            ]
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await proc.communicate()
-            
-            results = []
-            for line in stdout.decode('utf-8', errors='ignore').splitlines():
-                if '|||' in line:
-                    title, url = line.split('|||', 1)
-                    # استخراج نام آهنگ و خواننده
-                    parts = title.split(' - ', 1)
-                    if len(parts) == 2:
-                        artist, song = parts
-                    else:
-                        artist, song = 'نامشخص', title
-                    results.append({
-                        'title': song.strip(),
-                        'artist': {'name': artist.strip()},
-                        'url': url.strip()
-                    })
-            return results
+        except FileNotFoundError:
+            logger.error('yt-dlp binary not found for search. Set YTDLP_PATH.')
+            return []
         except Exception as e:
-            print(f"خطا در جستجو: {e}")
+            logger.error(f'Search error: {e}')
             return []
 
+        results: List[Dict[str, Any]] = []
+        for line in stdout.decode('utf-8', errors='ignore').splitlines():
+            if '|||' not in line:
+                continue
+            title, url = line.split('|||', 1)
+            title = title.strip()
+            url = url.strip()
+            if not title:
+                continue
+            artist, song = self._split_title(title)
+            results.append({'title': song, 'artist': {'name': artist}, 'url': url})
+        return results
+
+    @staticmethod
+    def _split_title(title: str) -> tuple:
+        """Best-effort split of a video title into (artist, song)."""
+        for sep in (' - ', ' — ', ' – ', ' | '):
+            if sep in title:
+                artist, song = title.split(sep, 1)
+                return artist.strip(), song.strip()
+        # Heuristic: "Artist - Topic" suffix from YouTube music channels
+        if title.lower().endswith(' - topic'):
+            return title[:-7].strip(), title
+        return 'نامشخص', title
+
     async def get_lyrics(self, artist: str, title: str) -> str:
-        """دریافت متن ترانه از lyrics.ovh (رایگان)"""
-        import urllib.request, urllib.parse, json
-        try:
-            url = f'https://api.lyrics.ovh/v1/{urllib.parse.quote(artist)}/{urllib.parse.quote(title)}'
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            resp = urllib.request.urlopen(req, timeout=15)
-            data = json.loads(resp.read())
-            return data.get('lyrics', '')
-        except Exception:
+        """Fetch lyrics from the free lyrics.ovh API (async)."""
+        if not artist or not title:
             return ''
 
-    def format_result(self, data: Dict[str, Any]) -> str:
-        """تبدیل نتیجه به متن زیبا"""
+        # Use asyncio.to_thread to avoid blocking the event loop
+        return await asyncio.to_thread(self._fetch_lyrics_sync, artist, title)
+
+    def _fetch_lyrics_sync(self, artist: str, title: str) -> str:
+        import urllib.request
+        url = f'https://api.lyrics.ovh/v1/{urllib.parse.quote(artist)}/{urllib.parse.quote(title)}'
+        req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode('utf-8', errors='ignore'))
+                lyrics = data.get('lyrics', '') or ''
+                return lyrics.strip()
+        except Exception as e:
+            logger.debug(f'Lyrics fetch failed for {artist} - {title}: {e}')
+            return ''
+
+    def format_result(self, data: Optional[Dict[str, Any]]) -> str:
+        """Format a recognition result into a readable message."""
         if not data:
-            return "🎵 موزیک شناسایی نشد."
-        
+            return '🎵 موسیقی شناسایی نشد.'
+
         lines = [
-            "🎵 **نتیجه تشخیص موزیک:**",
+            '🎵 **نتیجه تشخیص موسیقی:**',
             f"🎶 عنوان: {data.get('title', 'نامشخص')}",
             f"👤 خواننده: {data.get('subtitle', 'نامشخص')}",
         ]
@@ -116,4 +148,4 @@ class Recognizer:
             lines.append(f"📅 تاریخ انتشار: {data['release_date']}")
         if data.get('url'):
             lines.append(f"🔗 لینک: {data['url']}")
-        return "\n".join(lines)
+        return '\n'.join(lines)

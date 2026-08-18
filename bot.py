@@ -1,160 +1,73 @@
-import os
+"""bot.py - Telegram bot: music download, recognition, conversion and admin panel."""
 import logging
-import sqlite3
-import asyncio
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
-from dotenv import load_dotenv
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes,
+    MessageHandler, filters,
+)
 
+from config import (
+    BOT_TOKEN, ADMIN_IDS, CHANNEL_USERNAME, DB_PATH, DOWNLOAD_DIR,
+    COOKIES_FILE, DEFAULT_LANG, MAX_SEARCH_RESULTS, TELEGRAM_MAX_MSG,
+    SUPPORTED_AUDIO_EXTS,
+)
+from db import DB
 from downloader import Downloader
 from recognizer import Recognizer
-from utils import sanitize_filename, extract_platform
+from utils import sanitize_filename, extract_platform, is_url, cleanup_file
 from locales import get_text
 from playlist_manager import PlaylistManager
 from quality_manager import QualityManager
 from extra_commands import set_quality_command, set_lang_command, playlist_command, tag_command, convert_command
-from plugin_manager import PluginManager
-
-# Load environment
-load_dotenv()
-
-# Config
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_IDS = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
-CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '').strip()
-DB_PATH = os.getenv('DB_PATH', 'data/users.db')
-DOWNLOAD_DIR = os.getenv('DOWNLOAD_DIR', 'downloads')
-COOKIES_FILE = os.getenv('COOKIES_FILE', '')
-
-# Ensure directories
-Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-Path(DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ========== Database ==========
-class DB:
-    def __init__(self, path: str = DB_PATH):
-        self.path = path
-        self._init_db()
+# Singletons
+db = DB(DB_PATH, default_channel=CHANNEL_USERNAME)
+playlist_mgr = PlaylistManager()
+quality_mgr = QualityManager()
+recognizer = Recognizer()
 
-    def _init_db(self):
-        with sqlite3.connect(self.path) as conn:
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    last_name TEXT,
-                    joined_at TEXT,
-                    last_active TEXT,
-                    is_banned INTEGER DEFAULT 0,
-                    is_admin INTEGER DEFAULT 0,
-                    download_count INTEGER DEFAULT 0,
-                    recognize_count INTEGER DEFAULT 0
-                )
-            ''')
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS blocked_users (
-                    user_id INTEGER PRIMARY KEY
-                )
-            ''')
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-            ''')
-            # Insert default settings if not exists
-            conn.execute('INSERT OR IGNORE INTO settings (key, value) VALUES ("channel", ?)', (CHANNEL_USERNAME,))
-
-    def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.path) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-            row = cur.fetchone()
-            return dict(row) if row else None
-
-    def add_user(self, user_id: int, username: str = '', first_name: str = '', last_name: str = ''):
-        now = datetime.now().isoformat()
-        with sqlite3.connect(self.path) as conn:
-            conn.execute('''
-                INSERT OR REPLACE INTO users (user_id, username, first_name, last_name, joined_at, last_active)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, username, first_name, last_name, now, now))
-
-    def update_activity(self, user_id: int):
-        now = datetime.now().isoformat()
-        with sqlite3.connect(self.path) as conn:
-            conn.execute('UPDATE users SET last_active = ? WHERE user_id = ?', (now, user_id))
-
-    def increment_download(self, user_id: int):
-        with sqlite3.connect(self.path) as conn:
-            conn.execute('UPDATE users SET download_count = download_count + 1 WHERE user_id = ?', (user_id,))
-
-    def increment_recognize(self, user_id: int):
-        with sqlite3.connect(self.path) as conn:
-            conn.execute('UPDATE users SET recognize_count = recognize_count + 1 WHERE user_id = ?', (user_id,))
-
-    def ban_user(self, user_id: int):
-        with sqlite3.connect(self.path) as conn:
-            conn.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
-
-    def unban_user(self, user_id: int):
-        with sqlite3.connect(self.path) as conn:
-            conn.execute('UPDATE users SET is_banned = 0 WHERE user_id = ?', (user_id,))
-
-    def is_banned(self, user_id: int) -> bool:
-        with sqlite3.connect(self.path) as conn:
-            cur = conn.execute('SELECT is_banned FROM users WHERE user_id = ?', (user_id,))
-            row = cur.fetchone()
-            return bool(row and row[0])
-
-    def get_all_users(self) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.path) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.execute('SELECT * FROM users ORDER BY joined_at DESC')
-            return [dict(row) for row in cur.fetchall()]
-
-    def get_settings(self, key: str) -> Optional[str]:
-        with sqlite3.connect(self.path) as conn:
-            cur = conn.execute('SELECT value FROM settings WHERE key = ?', (key,))
-            row = cur.fetchone()
-            return row[0] if row else None
-
-    def set_setting(self, key: str, value: str):
-        with sqlite3.connect(self.path) as conn:
-            conn.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
-
-db = DB()
 
 # ========== Helpers ==========
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
+
+def user_lang(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
+    """Get the user's preferred language, falling back to default."""
+    lang = context.user_data.get('lang') if context.user_data else None
+    if lang:
+        return lang
+    return db.get_language(user_id, DEFAULT_LANG)
+
+
 async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if user is member of required channel"""
-    if not CHANNEL_USERNAME:
+    """Check if the user is a member of the required channel."""
+    channel = db.get_settings('channel') or CHANNEL_USERNAME
+    if not channel:
         return True
     try:
-        chat_id = CHANNEL_USERNAME if CHANNEL_USERNAME.startswith('@') else '@' + CHANNEL_USERNAME
+        chat_id = channel if channel.startswith('@') else '@' + channel
         member = await context.bot.get_chat_member(chat_id, update.effective_user.id)
-        return member.status in [ChatMember.OWNER, ChatMember.ADMINISTRATOR, ChatMember.MEMBER]
-    except:
+        return member.status in (ChatMember.OWNER, ChatMember.ADMINISTRATOR, ChatMember.MEMBER)
+    except Exception as e:
+        logger.debug(f'Membership check failed: {e}')
         return False
 
+
 async def require_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    channel = db.get_settings('channel') or CHANNEL_USERNAME
     if await check_membership(update, context):
         return True
     msg = (
-        f"❗ برای استفاده از ربات ابتدا در کانال {CHANNEL_USERNAME} عضو شوید.\n"
-        "پس از عضویت، دوباره امتحان کنید."
+        f'❗ برای استفاده از ربات ابتدا در کانال {channel} عضو شوید.\n'
+        'پس از عضویت، دوباره امتحان کنید.'
     )
     if update.callback_query:
         await update.callback_query.answer(msg, show_alert=True)
@@ -162,16 +75,40 @@ async def require_membership(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(msg)
     return False
 
+
+def main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton('🔍 جستجوی آهنگ', callback_data='cmd_search')],
+        [InlineKeyboardButton('⬇️ دانلود از لینک', callback_data='cmd_download')],
+        [InlineKeyboardButton('🎵 شناسایی آهنگ', callback_data='cmd_recognize')],
+        [InlineKeyboardButton('📝 متن ترانه', callback_data='cmd_lyrics')],
+        [InlineKeyboardButton('🎬 تبدیل ویدئو', callback_data='cmd_convert')],
+        [InlineKeyboardButton('ℹ️ اطلاعات ویدئو', callback_data='cmd_info')],
+        [InlineKeyboardButton('📊 آمار من', callback_data='cmd_stats')],
+        [InlineKeyboardButton('📂 پلی‌لیست', callback_data='cmd_playlist')],
+        [InlineKeyboardButton('🏷️ برچسب‌ها', callback_data='cmd_tag')],
+    ]
+    if is_admin(user_id):
+        kb.append([InlineKeyboardButton('👑 پنل ادمین', callback_data='cmd_admin')])
+    return InlineKeyboardMarkup(kb)
+
+
+def back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton('🔙 بازگشت به منو', callback_data='cmd_back')]])
+
+
 def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_admin(update.effective_user.id):
+            msg = '⛔ این دستور فقط برای ادمین‌هاست.'
             if update.callback_query:
-                await update.callback_query.answer("⛔ این دستور فقط برای ادمین‌هاست.", show_alert=True)
+                await update.callback_query.answer(msg, show_alert=True)
             elif update.message:
-                await update.message.reply_text("⛔ این دستور فقط برای ادمین‌هاست.")
+                await update.message.reply_text(msg)
             return
         return await func(update, context)
     return wrapper
+
 
 # ========== Bot Handlers ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,211 +117,204 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.update_activity(user.id)
 
     if db.is_banned(user.id):
-        await update.message.reply_text("⛔ شما توسط ادمین مسدود شده‌اید.")
+        await update.message.reply_text('⛔ شما توسط ادمین مسدود شده‌اید.')
         return
 
     if not await check_membership(update, context):
+        channel = db.get_settings('channel') or CHANNEL_USERNAME
         await update.message.reply_text(
-            f"❗ برای استفاده از ربات ابتدا در کانال {CHANNEL_USERNAME} عضو شوید.\n"
-            "پس از عضویت، دوباره /start را بزنید."
+            f'❗ برای استفاده از ربات ابتدا در کانال {channel} عضو شوید.\n'
+            'پس از عضویت، دوباره /start را بزنید.'
         )
         return
 
-    keyboard = [
-        [InlineKeyboardButton("🔍 جستجوی آهنگ", callback_data="cmd_search")],
-        [InlineKeyboardButton("⬇️ دانلود از لینک", callback_data="cmd_download")],
-        [InlineKeyboardButton("🎵 شناسایی آهنگ", callback_data="cmd_recognize")],
-        [InlineKeyboardButton("📝 متن ترانه", callback_data="cmd_lyrics")],
-        [InlineKeyboardButton("🎬 تبدیل ویدیو", callback_data="cmd_convert")],
-        [InlineKeyboardButton("📋 اطلاعات ویدیو", callback_data="cmd_info")],
-        [InlineKeyboardButton("📊 آمار من", callback_data="cmd_stats")],
-        [InlineKeyboardButton("📂 پلی‌لیست", callback_data="cmd_playlist")],
-        [InlineKeyboardButton("🏷️ برچسب‌ها", callback_data="cmd_tag")],
-    ]
-    if is_admin(user.id):
-        keyboard.append([InlineKeyboardButton("👑 پنل ادمین", callback_data="cmd_admin")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     welcome = (
-        f"🎵 سلام {user.first_name}!\n\n"
-        "به ربات تشخیص و دانلود موزیک خوش آمدید.\n\n"
-        "💡 فقط کافیه نام آهنگ رو تایپ کنید!\n"
-        "یا از دکمه‌های زیر استفاده کنید:"
+        f'🎵 سلام {user.first_name}!\n\n'
+        'به ربات تشخیص و دانلود موسیقی خوش آمدید.\n\n'
+        '💡 فقط کافیه نام آهنگ رو تایپ کنی!\n'
+        'یا از دکمه‌های زیر استفاده کنی:'
     )
-    await update.message.reply_text(welcome, reply_markup=reply_markup)
+    await update.message.reply_text(welcome, reply_markup=main_menu_keyboard(user.id))
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
+
+async def _send_audio_file(message, file_path: Path, title: str = '', performer: str = '') -> bool:
+    """Send an audio file with a context-managed handle. Returns True on success."""
+    if not file_path.exists():
+        return False
+    try:
+        with open(file_path, 'rb') as f:
+            await message.reply_audio(audio=f, title=title or file_path.stem,
+                                      performer=performer, filename=file_path.name)
+        return True
+    except Exception as e:
+        logger.error(f'Failed to send audio {file_path}: {e}')
+        return False
+
+
 async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if db.is_banned(user.id):
-        await update.message.reply_text("⛔ شما مسدود شده‌اید.")
+        await update.message.reply_text('⛔ شما مسدود شده‌اید.')
         return
     if not await require_membership(update, context):
         return
 
     if not context.args:
-        await update.message.reply_text("❗ لطفاً یک لینک وارد کنید.\nمثال: /download https://www.tiktok.com/@user/video/123")
+        await update.message.reply_text('❗ لطفاً یک لینک وارد کنید.\nمثال: /download https://www.tiktok.com/@user/video/123')
         return
 
     url = context.args[0]
+    if not is_url(url):
+        await update.message.reply_text('❗ لینک وارد شده معتبر نیست.')
+        return
+
     db.update_activity(user.id)
+    await update.message.reply_text(f'⬇️ در حال دانلود از {extract_platform(url)}...')
 
-    await update.message.reply_text(f"⬇️ در حال دانلود از {extract_platform(url)}...")
-
+    downloader = Downloader(output_dir=DOWNLOAD_DIR, cookies_file=COOKIES_FILE or None)
     try:
-        downloader = Downloader(output_dir=DOWNLOAD_DIR, cookies_file=COOKIES_FILE if Path(COOKIES_FILE).exists() else None)
         result = await downloader.download(url, extract_audio=True, playlist=False)
-
-        if not result:
-            await update.message.reply_text("❌ دانلود ناموفق بود.")
-            return
-
-        if isinstance(result, list):
-            for r in result:
-                fpath = Path(r['filename'])
-                if fpath.exists():
-                    await update.message.reply_audio(audio=open(fpath, 'rb'), filename=fpath.name)
-            db.increment_download(user.id)
-        elif isinstance(result, dict):
-            fpath = Path(result.get('filename', ''))
-            if fpath.exists():
-                await update.message.reply_audio(audio=open(fpath, 'rb'), filename=fpath.name)
-            db.increment_download(user.id)
-        else:
-            await update.message.reply_text("❌ دانلود ناموفق بود.")
-            return
     except Exception as e:
-        logger.error(f"Download error: {e}")
-        # ارسال لینک به عنوان fallback
-        url = context.args[0] if context.args else ''
-        if 'youtube.com' in url or 'youtu.be' in url:
-            await update.message.reply_text(f"❌ خطا در دانلود.\n\n🔗 لینک مستقیم:\n{url}\n\n💡 لینک رو کپی کن و در مرورگر باز کن.")
+        logger.error(f'Download error: {e}')
+        await update.message.reply_text(f'❌ خطا در دانلود: {e}')
+        return
+
+    if not result:
+        if 'youtu' in url:
+            await update.message.reply_text(
+                f'❌ دانلود ناموفق بود.\n\n🔗 لینک مستقیم:\n{url}\n\n💡 لینک رو کپی کن و در مرورگر باز کن.'
+            )
         else:
-            await update.message.reply_text(f"❌ خطا در دانلود: {str(e)}")
+            await update.message.reply_text('❌ دانلود ناموفق بود.')
+        return
+
+    if isinstance(result, list):
+        items = result
+    elif isinstance(result, dict):
+        items = [result]
+    else:
+        await update.message.reply_text('❌ دانلود ناموفق بود.')
+        return
+
+    sent = False
+    for r in items:
+        fpath = Path(r.get('filename', ''))
+        title = r.get('title', '')
+        if await _send_audio_file(update.message, fpath, title=title):
+            sent = True
+            db.increment_download(user.id)
+    if not sent:
+        await update.message.reply_text('❌ ارسال فایل ناموفق بود.')
+
 
 async def recognize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if db.is_banned(user.id):
-        await update.message.reply_text("⛔ شما مسدود شده‌اید.")
+        await update.message.reply_text('⛔ شما مسدود شده‌اید.')
         return
     if not await require_membership(update, context):
         return
 
-    # پشتیبانی از: ریپلای به فایل صوتی + ویس مستقیم + ویدیوی صوتی
-    target_msg = update.message
-    file = None
-    file_name = "audio.ogg"
-
-    # حالت ۱: ریپلای به فایل صوتی
-    if update.message.reply_to_message:
-        replied = update.message.reply_to_message
-        if replied.document:
-            file = replied.document
-            file_name = file.file_name or "audio.ogg"
-        elif replied.audio:
-            file = replied.audio
-            file_name = file.file_name or f"audio_{replied.message_id}.mp3"
-        elif replied.voice:
-            file = replied.voice
-            file_name = f"voice_{replied.message_id}.ogg"
-        elif replied.video:
-            file = replied.video
-            file_name = f"video_{replied.message_id}.mp4"
-    # حالت ۲: فایل صوتی مستقیم
-    elif update.message.document:
-        file = update.message.document
-        file_name = file.file_name or "audio.ogg"
-    elif update.message.audio:
-        file = update.message.audio
-        file_name = file.file_name or f"audio_{update.message.message_id}.mp3"
-    elif update.message.voice:
-        file = update.message.voice
-        file_name = f"voice_{update.message.message_id}.ogg"
-    elif update.message.video:
-        file = update.message.video
-        file_name = f"video_{update.message.message_id}.mp4"
-
+    file, file_name = _extract_audio_file_from_message(update.message)
     if not file:
         await update.message.reply_text(
-            "❗ لطفاً یک فایل صوتی ارسال کنید یا به آن ریپلای کنید.\n\n"
-            "🎯 روش‌ها:\n"
-            "۱. فایل صوتی بفرست + روش /recognize بزن\n"
-            "۲. ویس بفرست + روش /recognize بزن\n"
-            "۳. ریپلای به فایل صوتی با /recognize"
+            '❗ لطفاً یک فایل صوتی ارسال کنید یا به آن ریپلای کنید.\n\n'
+            '🎬 روش‌ها:\n'
+            '۱. فایل صوتی بفرست + روش /recognize بزن\n'
+            '۲. ویس بفرست + روش /recognize بزن\n'
+            '۳. ریپلای به فایل صوتی با /recognize'
         )
         return
 
     db.update_activity(user.id)
-    await update.message.reply_text("🔍 در حال تشخیص موزیک با Shazam...")
+    await update.message.reply_text('🔍 در حال تشخیص موسیقی با Shazam...')
 
+    file_path = None
     try:
         file_obj = await file.get_file()
-        file_path = Path(DOWNLOAD_DIR) / f"temp_{user.id}_{file_name}"
+        file_path = Path(DOWNLOAD_DIR) / f'temp_{user.id}_{file_name}'
         await file_obj.download_to_drive(file_path)
 
-        recognizer = Recognizer()
         result = await recognizer.recognize_file(str(file_path))
-
-        if file_path.exists():
-            file_path.unlink()
-
         if result and 'error' not in result:
             db.increment_recognize(user.id)
             await update.message.reply_text(recognizer.format_result(result))
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton('⬇️ دانلود این آهنگ', callback_data='dl_recognize')]])
+            await update.message.reply_text('🎵 می‌خوای دانلودش کنم؟', reply_markup=kb)
         else:
-            err = result.get('error', 'خطای ناشناخته') if result else 'نتیجه‌ای یافت نشد'
-            await update.message.reply_text(f"❌ تشخیص ناموفق: {err}")
-
+            err = (result or {}).get('error', 'نتیجه‌ای پیدا نشد')
+            await update.message.reply_text(f'❌ تشخیص ناموفق: {err}')
     except Exception as e:
-        logger.error(f"Recognize error: {e}")
-        await update.message.reply_text(f"❌ خطا در تشخیص: {str(e)}")
+        logger.error(f'Recognize error: {e}')
+        await update.message.reply_text(f'❌ خطا در تشخیص: {e}')
+    finally:
+        if file_path:
+            cleanup_file(file_path)
+
+
+def _extract_audio_file_from_message(message):
+    """Return (file_obj, file_name) for a voice/audio/video/document to recognize."""
+    target = message.reply_to_message if message.reply_to_message else message
+    if not target:
+        return None, 'audio.ogg'
+    if target.document:
+        return target.document, target.document.file_name or 'audio.ogg'
+    if target.audio:
+        return target.audio, target.audio.file_name or f'audio_{target.message_id}.mp3'
+    if target.voice:
+        return target.voice, f'voice_{target.message_id}.ogg'
+    if target.video:
+        return target.video, f'video_{target.message_id}.mp4'
+    return None, 'audio.ogg'
+
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if db.is_banned(user.id):
-        await update.message.reply_text("⛔ شما مسدود شده‌اید.")
+        await update.message.reply_text('⛔ شما مسدود شده‌اید.')
         return
     if not await require_membership(update, context):
         return
 
-    if not context.args:
-        await update.message.reply_text("❗ لطفاً یک لینک وارد کنید.\nمثال: /info https://www.youtube.com/watch?v=abc")
+    if not context.args or not is_url(context.args[0]):
+        await update.message.reply_text('❗ لطفاً یک لینک وارد کنید.\nمثال: /info https://www.youtube.com/watch?v=abc')
         return
 
     url = context.args[0]
     db.update_activity(user.id)
-
-    await update.message.reply_text("📋 در حال دریافت اطلاعات...")
+    await update.message.reply_text('ℹ️ در حال دریافت اطلاعات...')
 
     try:
-        downloader = Downloader(output_dir=DOWNLOAD_DIR)
+        downloader = Downloader(output_dir=DOWNLOAD_DIR, cookies_file=COOKIES_FILE or None)
         info = await downloader.get_info(url)
         if info:
             msg = (
-                f"📋 اطلاعات:\n"
-                f"🎵 عنوان: {info.get('title', 'نامشخص')}\n"
-                f"👤 کانال: {info.get('uploader', 'نامشخص')}\n"
+                f"ℹ️ اطلاعات:\n"
+                f"🎵 عنوان: {info.get('title') or 'نامشخص'}\n"
+                f"👤 کانال: {info.get('uploader') or 'نامشخص'}\n"
                 f"⏱ مدت: {info.get('duration', 0)} ثانیه\n"
                 f"👁 بازدید: {info.get('view_count', 0):,}\n"
                 f"❤️ لایک: {info.get('like_count', 0):,}\n"
-                f"🖼 تصویر: {info.get('thumbnail', 'ندارد')}"
+                f"🖼 تصویر: {info.get('thumbnail') or 'ندارد'}"
             )
             await update.message.reply_text(msg)
         else:
-            await update.message.reply_text("❌ دریافت اطلاعات ناموفق.")
+            await update.message.reply_text('❌ دریافت اطلاعات ناموفق.')
     except Exception as e:
-        await update.message.reply_text(f"❌ خطا: {str(e)}")
+        logger.error(f'Info error: {e}')
+        await update.message.reply_text(f'❌ خطا: {e}')
+
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     data = db.get_user(user.id)
     if not data:
-        await update.message.reply_text("❌ آماری یافت نشد.")
+        await update.message.reply_text('❌ آماری پیدا نشد.')
         return
-
     msg = (
         f"📊 آمار شما:\n"
         f"📥 دانلودها: {data.get('download_count', 0)}\n"
@@ -396,149 +326,133 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def lyrics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دریافت متن ترانه"""
+    """Fetch song lyrics."""
     user = update.effective_user
     if db.is_banned(user.id):
-        await update.message.reply_text("⛔ شما مسدود شده‌اید.")
+        await update.message.reply_text('⛔ شما مسدود شده‌اید.')
         return
     if not await require_membership(update, context):
         return
 
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("❗ لطفاً نام خواننده و آهنگ را وارد کنید.\nمثال: /lyrics Eminem Lose Yourself")
+        await update.message.reply_text('❗ لطفاً نام خواننده و آهنگ را وارد کنید.\nمثال: /lyrics Eminem Lose Yourself')
         return
 
     text = ' '.join(context.args)
-    parts = text.split(' - ', 1)
-    if len(parts) == 2:
-        artist, title = parts[0].strip(), parts[1].strip()
+    # Support "artist - title" or "artist title"
+    if ' - ' in text:
+        artist, title = text.split(' - ', 1)
     else:
         parts = text.split(' ', 1)
-        artist, title = parts[0].strip(), parts[1].strip() if len(parts) > 1 else ''
+        artist = parts[0]
+        title = parts[1] if len(parts) > 1 else ''
+    artist, title = artist.strip(), title.strip()
 
     if not artist or not title:
-        await update.message.reply_text("❗ هم نام خواننده و هم نام آهنگ لازمه.")
+        await update.message.reply_text('❗ هم نام خواننده و هم نام آهنگ لازمه.')
         return
 
-    await update.message.reply_text(f"🔍 در حال جستجوی متن ترانه «{title}» از «{artist}»...")
+    db.update_activity(user.id)
+    await update.message.reply_text(f'🔍 در حال جستجوی متن ترانه «{title}» از «{artist}»...')
 
-    recognizer = Recognizer()
-    lyrics = await recognizer.get_lyrics(artist, title)
+    try:
+        lyrics = await recognizer.get_lyrics(artist, title)
+    except Exception as e:
+        logger.error(f'Lyrics error: {e}')
+        lyrics = ''
 
     if lyrics:
-        # Telegram max message length is 4096
-        if len(lyrics) > 4000:
-            lyrics = lyrics[:4000] + "\n\n... [ادامه متن]"
-        await update.message.reply_text(f"📝 **{artist} - {title}**\n\n{lyrics}")
+        if len(lyrics) > TELEGRAM_MAX_MSG - 100:
+            lyrics = lyrics[:TELEGRAM_MAX_MSG - 100] + '\n\n... [ادامه متن]'
+        await update.message.reply_text(f'📝 **{artist} - {title}**\n\n{lyrics}')
     else:
-        await update.message.reply_text("❌ متن ترانه یافت نشد.\n\n💡 نکته: نام خواننده و آهنگ رو به انگلیسی وارد کنید.")
+        await update.message.reply_text('❌ متن ترانه پیدا نشد.\n\n💡 نکته: نام خواننده و آهنگ رو به انگلیسی وارد کنید.')
+
 
 # ========== Command Callback Handler ==========
 async def command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """هندلر دکمه‌های منوی اصلی"""
+    """Handle main-menu button callbacks."""
     query = update.callback_query
     await query.answer()
     data = query.data
+    back = back_keyboard()
 
-    keyboard_back = [[InlineKeyboardButton("🔙 بازگشت به منو", callback_data="cmd_back")]]
-
-    if data == "cmd_back":
-        # بازگشت به منوی اصلی
+    if data == 'cmd_back':
         context.user_data['state'] = None
         user = update.effective_user
-        kb = [
-            [InlineKeyboardButton("🔍 جستجوی آهنگ", callback_data="cmd_search")],
-            [InlineKeyboardButton("⬇️ دانلود از لینک", callback_data="cmd_download")],
-            [InlineKeyboardButton("🎵 شناسایی آهنگ", callback_data="cmd_recognize")],
-            [InlineKeyboardButton("📝 متن ترانه", callback_data="cmd_lyrics")],
-            [InlineKeyboardButton("🎬 تبدیل ویدیو", callback_data="cmd_convert")],
-            [InlineKeyboardButton("📋 اطلاعات ویدیو", callback_data="cmd_info")],
-            [InlineKeyboardButton("📊 آمار من", callback_data="cmd_stats")],
-            [InlineKeyboardButton("📂 پلی‌لیست", callback_data="cmd_playlist")],
-            [InlineKeyboardButton("🏷️ برچسب‌ها", callback_data="cmd_tag")],
-        ]
-        if is_admin(user.id):
-            kb.append([InlineKeyboardButton("👑 پنل ادمین", callback_data="cmd_admin")])
         await query.edit_message_text(
-            f"🎵 سلام {user.first_name}!\n\n"
-            "به ربات تشخیص و دانلود موزیک خوش آمدید.\n\n"
-            "💡 فقط کافیه نام آهنگ رو تایپ کنید!\n"
-            "یا از دکمه‌های زیر استفاده کنید:",
-            reply_markup=InlineKeyboardMarkup(kb)
+            f'🎵 سلام {user.first_name}!\n\n'
+            'به ربات تشخیص و دانلود موسیقی خوش آمدید.\n\n'
+            '💡 فقط کافیه نام آهنگ رو تایپ کنی!\n'
+            'یا از دکمه‌های زیر استفاده کنی:',
+            reply_markup=main_menu_keyboard(user.id),
         )
-
-    elif data == "cmd_search":
+    elif data == 'cmd_search':
         await query.edit_message_text(
-            "🔍 **جستجوی آهنگ**\n\n"
-            "نام آهنگ یا خواننده رو مستقیم تایپ کنید:\n\n"
-            "💡 مثال:\n"
-            "• eminem lose yourself\n"
-            "• رضا بهرام گل بیته\n"
-            "• Chester Bennington\n\n"
-            "⚡ فقط کافیه اسم رو تایپ کنی، نتایج با دکمه اومده!",
-            reply_markup=InlineKeyboardMarkup(keyboard_back)
+            '🔍 **جستجوی آهنگ**\n\n'
+            'نام آهنگ یا خواننده رو مستقیم تایپ کن:\n\n'
+            '💡 مثال:\n'
+            '• eminem lose yourself\n'
+            '• رضا بهرام گل بیته\n'
+            '• Chester Bennington\n\n'
+            '⚡ فقط کافیه اسم رو تایپ کنی، نتایج با دکمه اومده!',
+            reply_markup=back,
         )
-
-    elif data == "cmd_download":
+    elif data == 'cmd_download':
         context.user_data['state'] = 'download'
         await query.edit_message_text(
-            "⬇️ **دانلود از لینک**\n\n"
-            "فقط کافیه **لینک** رو بفرستی! (بدون دستور)\n\n"
-            "💡 مثال:\n"
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ\n\n"
-            "📱 پشتیبانی:\n"
-            "• YouTube\n• TikTok\n• Instagram\n• SoundCloud\n• Vimeo\n• + ۱۰۰۰ سایت دیگه",
-            reply_markup=InlineKeyboardMarkup(keyboard_back)
+            '⬇️ **دانلود از لینک**\n\n'
+            'فقط کافیه **لینک** رو بفرستی! (بدون دستور)\n\n'
+            '💡 مثال:\n'
+            'https://www.youtube.com/watch?v=dQw4w9WgXcQ\n\n'
+            '📱 پشتیبانی:\n'
+            '• YouTube\n• TikTok\n• Instagram\n• SoundCloud\n• Vimeo\n• + ۱۰۰۰ سایت دیگه',
+            reply_markup=back,
         )
-
-    elif data == "cmd_recognize":
+    elif data == 'cmd_recognize':
         context.user_data['state'] = 'recognize'
         await query.edit_message_text(
-            "🎵 **شناسایی آهنگ با Shazam**\n\n"
-            "فقط کافیه **ویس یا فایل صوتی** بفرستی! (بدون دستور)\n\n"
-            "💡 روش:\n"
-            "۱. ویس بفرست\n"
-            "۲. فایل صوتی بفرست\n"
-            "۳. ویدیو بفرست\n\n"
-            "🎯 نتیجه: نام آهنگ، خواننده، آلبوم، لینک",
-            reply_markup=InlineKeyboardMarkup(keyboard_back)
+            '🎵 **شناسایی آهنگ با Shazam**\n\n'
+            'فقط کافیه **ویس یا فایل صوتی** بفرستی! (بدون دستور)\n\n'
+            '💡 روش:\n'
+            '۱. ویس بفرست\n'
+            '۲. فایل صوتی بفرست\n'
+            '۳. ویدئو بفرست\n\n'
+            '🎯 نتیجه: نام آهنگ، خواننده، آلبوم، لینک',
+            reply_markup=back,
         )
-
-    elif data == "cmd_lyrics":
+    elif data == 'cmd_lyrics':
         context.user_data['state'] = 'lyrics'
         await query.edit_message_text(
-            "📝 **متن ترانه**\n\n"
-            "نام خواننده و آهنگ رو بفرست (بدون دستور):\n\n"
-            "💡 مثال:\n"
-            "Eminem Lose Yourself\n"
-            "رضا بهرام گل بیته\n\n"
-            "🌐 زبان‌ها: فارسی، انگلیسی، عربی",
-            reply_markup=InlineKeyboardMarkup(keyboard_back)
+            '📝 **متن ترانه**\n\n'
+            'نام خواننده و آهنگ رو بفرست (بدون دستور):\n\n'
+            '💡 مثال:\n'
+            'Eminem Lose Yourself\n'
+            'رضا بهرام گل بیته\n\n'
+            '🌐 زبان‌ها: فارسی، انگلیسی، عربی',
+            reply_markup=back,
         )
-
-    elif data == "cmd_convert":
+    elif data == 'cmd_convert':
         context.user_data['state'] = 'convert'
         await query.edit_message_text(
-            "🎬 **تبدیل ویدیو به صدا (MP3)**\n\n"
-            "فقط کافیه **لینک ویدیو** رو بفرستی (بدون دستور):\n\n"
-            "💡 مثال:\n"
-            "https://www.youtube.com/watch?v=...\n\n"
-            "🎵 خروجی: MP3 با کیفیت بالا",
-            reply_markup=InlineKeyboardMarkup(keyboard_back)
+            '🎬 **تبدیل ویدئو به صدا (MP3)**\n\n'
+            'فقط کافیه **لینک ویدئو** رو بفرستی (بدون دستور)\n\n'
+            '💡 مثال:\n'
+            'https://www.youtube.com/watch?v=...\n\n'
+            '🎵 خروجی: MP3 با کیفیت بالا',
+            reply_markup=back,
         )
-
-    elif data == "cmd_info":
+    elif data == 'cmd_info':
         context.user_data['state'] = 'info'
         await query.edit_message_text(
-            "📋 **اطلاعات ویدیو/صوت**\n\n"
-            "فقط کافیه **لینک** رو بفرستی (بدون دستور):\n\n"
-            "💡 مثال:\n"
-            "https://www.youtube.com/watch?v=...\n\n"
-            "📊 اطلاعات: عنوان، خواننده، مدت، بازدید، لایک",
-            reply_markup=InlineKeyboardMarkup(keyboard_back)
+            'ℹ️ **اطلاعات ویدئو/صوت**\n\n'
+            'فقط کافیه **لینک** رو بفرستی (بدون دستور)\n\n'
+            '💡 مثال:\n'
+            'https://www.youtube.com/watch?v=...\n\n'
+            '📊 اطلاعات: عنوان، خواننده، مدت، بازدید، لایک',
+            reply_markup=back,
         )
-
-    elif data == "cmd_stats":
+    elif data == 'cmd_stats':
         user = update.effective_user
         user_data = db.get_user(user.id)
         if user_data:
@@ -550,110 +464,89 @@ async def command_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🕐 آخرین فعالیت: {user_data.get('last_active', 'نامشخص')}"
             )
         else:
-            msg = "❌ آماری یافت نشد."
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard_back))
-
-    elif data == "cmd_playlist":
+            msg = '❌ آماری پیدا نشد.'
+        await query.edit_message_text(msg, reply_markup=back)
+    elif data == 'cmd_playlist':
         await query.edit_message_text(
-            "📂 **مدیریت پلی‌لیست**\n\n"
-            "💡 دستورات:\n\n"
-            "`` /playlist create <نام> `` — ایجاد پلی‌لیست\n"
-            "`` /playlist delete <نام> `` — حذف پلی‌لیست\n"
-            "`` /playlist list `` — نمایش پلی‌لیست‌ها\n"
-            "`` /playlist show <نام> `` — نمایش آهنگ‌ها",
-            reply_markup=InlineKeyboardMarkup(keyboard_back)
+            '📂 **مدیریت پلی‌لیست**\n\n'
+            '💡 دستورات:\n\n'
+            '`` /playlist create <نام> `` — ایجاد پلی‌لیست\n'
+            '`` /playlist delete <نام> `` — حذف پلی‌لیست\n'
+            '`` /playlist list `` — نمایش پلی‌لیست‌ها\n'
+            '`` /playlist show <نام> `` — نمایش آهنگ‌ها',
+            reply_markup=back,
         )
-
-    elif data == "cmd_tag":
+    elif data == 'cmd_tag':
         await query.edit_message_text(
-            "🏷️ **مدیریت برچسب‌ها**\n\n"
-            "💡 دستورات:\n\n"
-            "`` /tag add <song_id> <tag> `` — افزودن برچسب\n"
-            "`` /tag remove <song_id> <tag> `` — حذف برچسب\n"
-            "`` /tag list `` — نمایش برچسب‌ها\n"
-            "`` /tag search <tag> `` — جستجو با برچسب",
-            reply_markup=InlineKeyboardMarkup(keyboard_back)
+            '🏷️ **مدیریت برچسب‌ها**\n\n'
+            '💡 دستورات:\n\n'
+            '`` /tag add <song_id> <tag> `` — افزودن برچسب\n'
+            '`` /tag remove <song_id> <tag> `` — حذف برچسب\n'
+            '`` /tag list `` — نمایش برچسب‌ها\n'
+            '`` /tag search <tag> `` — جستجو با برچسب',
+            reply_markup=back,
         )
-
-    elif data == "cmd_admin":
+    elif data == 'cmd_admin':
         user = update.effective_user
         if not is_admin(user.id):
-            await query.edit_message_text("⛔ فقط ادمین‌ها دسترسی دارند.")
+            await query.edit_message_text('⛔ فقط ادمین‌ها دسترسی دارند.')
             return
         kb = [
-            [InlineKeyboardButton("📊 آمار کلی", callback_data='admin_stats')],
-            [InlineKeyboardButton("📢 ارسال همگانی", callback_data='admin_broadcast')],
-            [InlineKeyboardButton("👥 لیست کاربران", callback_data='admin_users')],
-            [InlineKeyboardButton("🚫 مسدود کردن", callback_data='admin_ban')],
-            [InlineKeyboardButton("✅ رفع مسدودیت", callback_data='admin_unban')],
-            [InlineKeyboardButton("📌 تنظیم کانال", callback_data='admin_set_channel')],
-            [InlineKeyboardButton("🔙 بازگشت به منو", callback_data="cmd_back")],
+            [InlineKeyboardButton('📊 آمار کلی', callback_data='admin_stats')],
+            [InlineKeyboardButton('📢 ارسال همگانی', callback_data='admin_broadcast')],
+            [InlineKeyboardButton('👥 لیست کاربران', callback_data='admin_users')],
+            [InlineKeyboardButton('⛔ مسدود کردن', callback_data='admin_ban')],
+            [InlineKeyboardButton('✅ رفع مسدودیت', callback_data='admin_unban')],
+            [InlineKeyboardButton('📌 تنظیم کانال', callback_data='admin_set_channel')],
+            [InlineKeyboardButton('🔙 بازگشت به منو', callback_data='cmd_back')],
         ]
-        await query.edit_message_text("👑 **پنل مدیریت**", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await query.edit_message_text('👑 **پنل مدیریت**', reply_markup=InlineKeyboardMarkup(kb),
+                                      parse_mode='Markdown')
+
 
 # ========== Voice/Audio Auto-Recognize Handler ==========
 async def audio_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """وقتی کاربر ویس یا فایل صوتی می‌فرسته، خودکار تشخیص بده (اگر state=recognize)"""
+    """Auto-recognize when a user sends a voice/audio file while in recognize state."""
     if not update.message:
         return
     user = update.effective_user
     if db.is_banned(user.id):
         return
 
-    # فقط وقتی کاربر دکمه شناسایی آهنگ زده باشه
     state = context.user_data.get('state')
     if state not in ('recognize', 'recognize_wait'):
         return
 
-    file = None
-    file_name = "audio.ogg"
-
-    if update.message.voice:
-        file = update.message.voice
-        file_name = f"voice_{update.message.message_id}.ogg"
-    elif update.message.audio:
-        file = update.message.audio
-        file_name = file.file_name or f"audio_{update.message.message_id}.mp3"
-    elif update.message.document:
-        # فقط فایل‌های صوتی
-        fname = (update.message.document.file_name or "").lower()
-        if fname.endswith(('.mp3', '.m4a', '.wav', '.flac', '.ogg', '.opus')):
-            file = update.message.document
-            file_name = update.message.document.file_name or "audio.ogg"
-    elif update.message.video:
-        file = update.message.video
-        file_name = f"video_{update.message.message_id}.mp4"
-
+    file, file_name = _extract_audio_file_from_message(update.message)
     if not file:
         return
 
     context.user_data['state'] = None
     db.update_activity(user.id)
-    await update.message.reply_text("🔍 در حال تشخیص موزیک با Shazam...")
+    await update.message.reply_text('🔍 در حال تشخیص موسیقی با Shazam...')
 
+    file_path = None
     try:
         file_obj = await file.get_file()
-        file_path = Path(DOWNLOAD_DIR) / f"temp_{user.id}_{file_name}"
+        file_path = Path(DOWNLOAD_DIR) / f'temp_{user.id}_{file_name}'
         await file_obj.download_to_drive(file_path)
 
-        recognizer = Recognizer()
         result = await recognizer.recognize_file(str(file_path))
-
-        if file_path.exists():
-            file_path.unlink()
-
         if result and 'error' not in result:
             db.increment_recognize(user.id)
             await update.message.reply_text(recognizer.format_result(result))
-            # پیشنهاد دانلود
-            kb = [[InlineKeyboardButton("⬇️ دانلود این آهنگ", callback_data="dl_search")]]
-            await update.message.reply_text("🎵 می‌خوای دانلودش کنم؟", reply_markup=InlineKeyboardMarkup(kb))
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton('⬇️ دانلود این آهنگ', callback_data='dl_recognize')]])
+            await update.message.reply_text('🎵 می‌خوای دانلودش کنم؟', reply_markup=kb)
         else:
-            err = result.get('error', 'خطای ناشناخته') if result else 'نتیجه‌ای یافت نشد'
-            await update.message.reply_text(f"❌ تشخیص ناموفق: {err}")
+            err = (result or {}).get('error', 'نتیجه‌ای پیدا نشد')
+            await update.message.reply_text(f'❌ تشخیص ناموفق: {err}')
     except Exception as e:
-        logger.error(f"Recognize error: {e}")
-        await update.message.reply_text(f"❌ خطا در تشخیص: {str(e)}")
+        logger.error(f'Recognize error: {e}')
+        await update.message.reply_text(f'❌ خطا در تشخیص: {e}')
+    finally:
+        if file_path:
+            cleanup_file(file_path)
+
 
 # ========== Search Callback ==========
 async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -661,198 +554,250 @@ async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    if data.startswith('search_'):
-        try:
-            idx = int(data.replace('search_', ''))
-        except (ValueError, IndexError):
-            await query.answer("❌ خطا در انتخاب", show_alert=True)
-            return
-        results = context.user_data.get('search_results', [])
-        if not results or idx < 0 or idx >= len(results):
-            await query.answer("❌ نتیجه یافت نشد", show_alert=True)
-            return
-        try:
-            track = results[idx]
-            title = track.get('title', 'نامشخص')
-            artist = track.get('artist', {}).get('name', 'نامشخص') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
-            await query.edit_message_text(f"🎵 {title}\n👤 {artist}\n\n⬇️ در حال دانلود...")
+    if not data.startswith('search_'):
+        return
 
-            # دانلود از YouTube با جستجو
-            await asyncio.sleep(5)  # وقفه برای جلوگیری از rate limiting
-            search_query = f"{title} {artist} audio"
-            downloader = Downloader(output_dir=DOWNLOAD_DIR)
-            try:
-                dl_result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
-            except Exception as e:
-                logger.error(f"Search download error: {e}")
-                dl_result = None
-            if dl_result and isinstance(dl_result, list) and len(dl_result) > 0:
-                try:
-                    fpath = Path(dl_result[0]['filename'])
-                    if fpath.exists():
-                        await query.message.reply_audio(
-                            audio=open(fpath, 'rb'),
-                            title=title,
-                            performer=artist,
-                            filename=fpath.name
-                        )
-                        await query.edit_message_text(f"✅ {title} - {artist}")
-                    else:
-                        raise FileNotFoundError("فایل پیدا نشد")
-                except Exception as e:
-                    await query.edit_message_text(f"❌ خطا در ارسال فایل: {str(e)}")
-            else:
-                url = track.get('url', '') if isinstance(track, dict) else ''
-                if url:
-                    await query.edit_message_text(f"❌ دانلود مستقیم ناموفق بود.\n\n🔗 لینک دستی:\n{url}\n\n💡 لینک رو کپی کن و در مرورگر باز کن.")
-                else:
-                    await query.edit_message_text("❌ دانلود ناموفق بود.")
-        except Exception as e:
-            logger.error(f"Search callback error: {e}")
-            await query.edit_message_text("❌ خطای غیرمنتظره در پردازش نتیجه.")
+    try:
+        idx = int(data.replace('search_', ''))
+    except ValueError:
+        await query.answer('❌ خطا در انتخاب', show_alert=True)
+        return
+
+    results: List[Dict[str, Any]] = context.user_data.get('search_results', [])
+    if not results or not (0 <= idx < len(results)):
+        await query.answer('❌ نتیجه پیدا نشد', show_alert=True)
+        return
+
+    track = results[idx]
+    title = track.get('title', 'نامشخص')
+    artist = track.get('artist', {}).get('name', '') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
+    await query.edit_message_text(f'🎵 {title}\n👤 {artist}\n\n⬇️ در حال دانلود...')
+
+    search_query = f'{title} {artist} audio'.strip()
+    downloader = Downloader(output_dir=DOWNLOAD_DIR)
+    try:
+        dl_result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
+    except Exception as e:
+        logger.error(f'Search download error: {e}')
+        dl_result = None
+
+    if dl_result and isinstance(dl_result, list) and dl_result:
+        fpath = Path(dl_result[0]['filename'])
+        if await _send_audio_file(query.message, fpath, title=title, performer=artist):
+            await query.edit_message_text(f'✅ {title} - {artist}')
+            return
+        await query.edit_message_text('❌ خطا در ارسال فایل.')
+    else:
+        url = track.get('url', '')
+        if url:
+            await query.edit_message_text(
+                f'❌ دانلود مستقیم ناموفق بود.\n\n🔗 لینک دستی:\n{url}\n\n💡 لینک رو کپی کن و در مرورگر باز کن.'
+            )
+        else:
+            await query.edit_message_text('❌ دانلود ناموفق بود.')
+
+
 # ========== Recognition Download Callback ==========
 async def recognition_download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دانلود آهنگ شناسایی شده با Shazam"""
+    """Download a track that was recognized via Shazam."""
     query = update.callback_query
     await query.answer()
 
-    # دریافت اطلاعات از پیام قبلی
-    msg = query.message.text or ""
-    title_line = msg.split("\n")[0] if msg else ""
-    title = title_line.replace("🎵 ", "").strip() or "unknown"
+    msg = query.message.text or ''
+    title_line = msg.split('\n')[0] if msg else ''
+    title = title_line.replace('🎵', '').replace('🎶', '').strip().split(' - ')[0] or 'unknown'
 
-    # جستجو و دانلود
-    await query.edit_message_text(f"🔍 در حال دانلود «{title}»...")
+    await query.edit_message_text(f'🔍 در حال دانلود «{title}»...')
 
     try:
-        recognizer = Recognizer()
         results = await recognizer.search_track(title, limit=1)
         if not results:
-            url = "https://www.youtube.com/results?search_query=" + title.replace(" ", "+")
             await query.edit_message_text(
-                f"❌ دانلود ناموفق بود.\n\n🔗 لینک دستی:\n{url}\n\n💡 لینک رو کپی کن و در مرورگر باز کن."
+                f'❌ دانلود ناموفق بود.\n\n🔗 لینک دستی:\n'
+                f'https://www.youtube.com/results?search_query={title.replace(" ", "+")}\n\n'
+                '💡 لینک رو کپی کن و در مرورگر باز کن.'
             )
             return
 
         track = results[0]
         search_title = track.get('title', title)
         artist = track.get('artist', {}).get('name', '') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
-        search_query = f"{search_title} {artist} audio"
+        search_query = f'{search_title} {artist} audio'.strip()
 
-        await asyncio.sleep(3)
         downloader = Downloader(output_dir=DOWNLOAD_DIR)
         try:
             dl_result = await downloader.download(search_query, extract_audio=True, playlist=False, is_search=True)
         except Exception as e:
-            logger.error(f"Recognition download error: {e}")
+            logger.error(f'Recognition download error: {e}')
             dl_result = None
 
-        if dl_result and isinstance(dl_result, list) and len(dl_result) > 0:
+        if dl_result and isinstance(dl_result, list) and dl_result:
             fpath = Path(dl_result[0]['filename'])
-            if fpath.exists():
-                await query.message.reply_audio(
-                    audio=open(fpath, 'rb'),
-                    title=search_title,
-                    performer=artist,
-                    filename=fpath.name
-                )
-                await query.edit_message_text(f"✅ {search_title} - {artist}")
+            if await _send_audio_file(query.message, fpath, title=search_title, performer=artist):
+                await query.edit_message_text(f'✅ {search_title} - {artist}')
                 return
+
         await query.edit_message_text(
-            f"❌ دانلود ناموفق بود.\n\n🔗 لینک دستی:\nhttps://www.youtube.com/results?search_query={title.replace(' ', '+')}\n\n💡 لینک رو کپی کن و در مرورگر باز کن."
+            f'❌ دانلود ناموفق بود.\n\n🔗 لینک دستی:\n'
+            f'https://www.youtube.com/results?search_query={title.replace(" ", "+")}\n\n'
+            '💡 لینک رو کپی کن و در مرورگر باز کن.'
         )
     except Exception as e:
-        logger.error(f"Recognition download callback error: {e}")
-        await query.edit_message_text("❌ خطا در دانلود.")
+        logger.error(f'Recognition download callback error: {e}')
+        await query.edit_message_text('❌ خطا در دانلود.')
+
 
 # ========== Admin Panel ==========
 @admin_only
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("📊 آمار کلی", callback_data='admin_stats')],
-        [InlineKeyboardButton("📢 ارسال همگانی", callback_data='admin_broadcast')],
-        [InlineKeyboardButton("👥 لیست کاربران", callback_data='admin_users')],
-        [InlineKeyboardButton("🚫 مسدود کردن", callback_data='admin_ban')],
-        [InlineKeyboardButton("✅ رفع مسدودیت", callback_data='admin_unban')],
-        [InlineKeyboardButton("📌 تنظیم کانال", callback_data='admin_set_channel')],
-        [InlineKeyboardButton("🔙 بستن", callback_data='admin_close')],
+        [InlineKeyboardButton('📊 آمار کلی', callback_data='admin_stats')],
+        [InlineKeyboardButton('📢 ارسال همگانی', callback_data='admin_broadcast')],
+        [InlineKeyboardButton('👥 لیست کاربران', callback_data='admin_users')],
+        [InlineKeyboardButton('⛔ مسدود کردن', callback_data='admin_ban')],
+        [InlineKeyboardButton('✅ رفع مسدودیت', callback_data='admin_unban')],
+        [InlineKeyboardButton('📌 تنظیم کانال', callback_data='admin_set_channel')],
+        [InlineKeyboardButton('🔙 بستن', callback_data='admin_close')],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("👑 **پنل مدیریت**", reply_markup=reply_markup, parse_mode='Markdown')
+    await update.message.reply_text('👑 **پنل مدیریت**', reply_markup=InlineKeyboardMarkup(keyboard),
+                                    parse_mode='Markdown')
+
 
 @admin_only
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     data = query.data
 
     if data == 'admin_stats':
-        users = db.get_all_users()
-        total = len(users)
-        banned = sum(1 for u in users if u.get('is_banned', 0))
-        downloads = sum(u.get('download_count', 0) for u in users)
-        recognizes = sum(u.get('recognize_count', 0) for u in users)
-
+        stats = db.get_stats()
         msg = (
             f"📊 **آمار کلی ربات**\n"
-            f"👥 کاربران: {total}\n"
-            f"🚫 مسدود: {banned}\n"
-            f"📥 دانلودها: {downloads}\n"
-            f"🎵 تشخیص‌ها: {recognizes}"
+            f"👥 کاربران: {stats['total']}\n"
+            f"⛔ مسدود: {stats['banned']}\n"
+            f"📥 دانلودها: {stats['downloads']}\n"
+            f"🎵 تشخیص‌ها: {stats['recognizes']}"
         )
         await query.edit_message_text(msg, parse_mode='Markdown')
-
     elif data == 'admin_broadcast':
-        await query.edit_message_text("📢 لطفاً پیام همگانی خود را ارسال کنید.\n(برای لغو /cancel)")
+        await query.edit_message_text('📢 لطفاً پیام همگانی خود را ارسال کنید.\n(برای لغو /cancel)')
         context.user_data['broadcast_mode'] = True
-
     elif data == 'admin_users':
         users = db.get_all_users()
         if not users:
-            await query.edit_message_text("❌ هیچ کاربری یافت نشد.")
+            await query.edit_message_text('❌ هیچ کاربری پیدا نشد.')
             return
-        # Show first 10
         lines = []
         for u in users[:10]:
             name = u.get('first_name', 'نامشخص')
             uname = u.get('username', '')
-            status = '🚫' if u.get('is_banned') else '✅'
+            status = '⛔' if u.get('is_banned') else '✅'
             lines.append(f"{status} {name} (@{uname}) - ID: {u['user_id']}")
-        msg = "👥 **کاربران (۱۰ نفر اول)**\n" + "\n".join(lines)
+        msg = '👥 **کاربران (۱۰ نفر اول)**\n' + '\n'.join(lines)
         await query.edit_message_text(msg, parse_mode='Markdown')
-
     elif data == 'admin_ban':
-        await query.edit_message_text("🚫 شناسه کاربری که می‌خواهید مسدود کنید را وارد کنید.\nمثال: 123456789")
-
+        await query.edit_message_text('⛔ شناسه کاربری که می‌خواهید مسدود کنید را وارد کنید.\nمثال: 123456789')
+        context.user_data['await_ban'] = True
     elif data == 'admin_unban':
-        await query.edit_message_text("✅ شناسه کاربری که می‌خواهید رفع مسدودیت کنید را وارد کنید.\nمثال: 123456789")
-
+        await query.edit_message_text('✅ شناسه کاربری که می‌خواهید رفع مسدودیت کنید را وارد کنید.\nمثال: 123456789')
+        context.user_data['await_unban'] = True
     elif data == 'admin_set_channel':
-        await query.edit_message_text("📌 کانال مورد نظر را وارد کنید (با @).\nمثال: @my_channel")
-
+        await query.edit_message_text('📌 کانال مورد نظر را وارد کنید (با @).\nمثال: @my_channel')
+        context.user_data['await_channel'] = True
     elif data == 'admin_close':
-        await query.edit_message_text("🔙 پنل بسته شد.")
+        await query.edit_message_text('🔙 پنل بسته شد.')
+
+
+async def _handle_admin_text_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle admin text-input states (broadcast, ban, unban, channel). Returns True if handled."""
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
+
+    if context.user_data.get('broadcast_mode'):
+        context.user_data['broadcast_mode'] = False
+        await _broadcast_message(update, context, text)
+        return True
+    if context.user_data.get('await_ban'):
+        context.user_data['await_ban'] = False
+        await _ban_by_text(update, text)
+        return True
+    if context.user_data.get('await_unban'):
+        context.user_data['await_unban'] = False
+        await _unban_by_text(update, text)
+        return True
+    if context.user_data.get('await_channel'):
+        context.user_data['await_channel'] = False
+        await _set_channel_by_text(update, context, text)
+        return True
+    return False
+
+
+async def _broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    users = db.get_all_users()
+    sent, failed = 0, 0
+    status = await update.message.reply_text(f'📢 در حال ارسال به {len(users)} کاربر...')
+    for u in users:
+        if u.get('is_banned'):
+            continue
+        try:
+            await context.bot.send_message(u['user_id'], text)
+            sent += 1
+        except Exception:
+            failed += 1
+    await status.edit_text(f'✅ ارسال شد به {sent} کاربر.\n❌ ناموفق: {failed}')
+
+
+async def _ban_by_text(update: Update, text: str):
+    try:
+        uid = int(text.split()[0])
+        db.ban_user(uid)
+        await update.message.reply_text(f'✅ کاربر {uid} مسدود شد.')
+    except (ValueError, IndexError):
+        await update.message.reply_text('❗ شناسه نامعتبر.')
+
+
+async def _unban_by_text(update: Update, text: str):
+    try:
+        uid = int(text.split()[0])
+        db.unban_user(uid)
+        await update.message.reply_text(f'✅ کاربر {uid} رفع مسدودیت شد.')
+    except (ValueError, IndexError):
+        await update.message.reply_text('❗ شناسه نامعتبر.')
+
+
+async def _set_channel_by_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    channel = text.split()[0]
+    if not channel.startswith('@'):
+        channel = '@' + channel
+    db.set_setting('channel', channel)
+    await update.message.reply_text(f'✅ کانال به {channel} تنظیم شد.')
+
 
 async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler یکپارچه: state machine بدون دستورات اسلش"""
+    """Unified handler: admin text states, slash commands, and the state machine for music search."""
     if not update.message or not update.message.text:
         return
 
     user = update.effective_user
     text = update.message.text.strip()
 
-    # پشتیبانی از دستورات ادمین قدیمی برای سازگاری
+    # Admin text-input states (broadcast, ban, etc.) — only for admins
+    if is_admin(user.id) and await _handle_admin_text_state(update, context):
+        return
+
+    # Slash commands
     if text.startswith('/'):
-        # لغو حالت فعلی
         if text == '/start':
             await start(update, context)
             return
         if text == '/cancel':
-            context.user_data['state'] = None
-            await update.message.reply_text("❌ لغو شد. روی دکمه زیر برگرد:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 منوی اصلی", callback_data="cmd_back")]]))
+            context.user_data.clear()
+            await update.message.reply_text(
+                '❌ لغو شد.', reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton('🔙 منوی اصلی', callback_data='cmd_back')]]
+                )
+            )
             return
-        # دستورات قدیمی هنوز کار می‌کنن
         if text.startswith('/download'):
             context.args = text.split()[1:]
             await download_command(update, context)
@@ -873,165 +818,131 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await recognize_command(update, context)
             return
         if text.startswith('/ban') and is_admin(user.id):
-            try:
-                uid = int(text.split()[1])
-                db.ban_user(uid)
-                await update.message.reply_text(f"✅ کاربر {uid} مسدود شد.")
-            except:
-                await update.message.reply_text("❗ شناسه نامعتبر.")
+            await _ban_by_text(update, text.replace('/ban', '', 1).strip())
             return
         if text.startswith('/unban') and is_admin(user.id):
-            try:
-                uid = int(text.split()[1])
-                db.unban_user(uid)
-                await update.message.reply_text(f"✅ کاربر {uid} رفع مسدودیت شد.")
-            except:
-                await update.message.reply_text("❗ شناسه نامعتبر.")
+            await _unban_by_text(update, text.replace('/unban', '', 1).strip())
             return
         if text.startswith('/set_channel') and is_admin(user.id):
-            parts = text.split()
-            if len(parts) < 2:
-                await update.message.reply_text("❗ کانال را وارد کنید (با @).")
-                return
-            channel = parts[1]
-            if not channel.startswith('@'):
-                channel = '@' + channel
-            db.set_setting('channel', channel)
-            global CHANNEL_USERNAME
-            CHANNEL_USERNAME = channel
-            await update.message.reply_text(f"✅ کانال به {channel} تنظیم شد.")
+            await _set_channel_by_text(update, context, text.replace('/set_channel', '', 1).strip())
             return
         return
 
-    # ===== State Machine: بدون دستور =====
+    if db.is_banned(user.id):
+        return
+
+    # State machine: commandless interactions
     state = context.user_data.get('state')
 
     if state == 'download':
-        # چک کن آیا متن واقعاً لینک هست
-        if not extract_platform(text).startswith(('Unknown', 'Spotify')):
+        if is_url(text):
             context.args = [text]
             context.user_data['state'] = None
             await download_command(update, context)
         else:
-            # متن لینک نیست → جستجو کن
             context.user_data['state'] = None
-            await update.message.reply_text("🔍 به نظر لینک نیست! دارم جستجو میکنم...")
+            await update.message.reply_text('🔍 به نظر لینک نیست! دارم جستجو می‌کنم...')
             await search_music_inline(update, context)
         return
-    elif state == 'lyrics':
+    if state == 'lyrics':
         context.args = text.split()
         context.user_data['state'] = None
         await lyrics_command(update, context)
         return
-    elif state == 'convert':
-        if '://' in text or extract_platform(text) != 'Unknown':
+    if state == 'convert':
+        if is_url(text):
             context.args = [text]
             context.user_data['state'] = None
             await convert_command(update, context)
         else:
             context.user_data['state'] = None
-            await update.message.reply_text("🎬 لطفاً یک لینک ویدیو بفرستید.\nیا برای جستجوی آهنگ، فقط اسمش رو تایپ کنید.")
-            await search_music_inline(update, context)
+            await update.message.reply_text('🎬 لطفاً یک لینک ویدئو بفرستی.')
         return
-    elif state == 'info':
-        if '://' in text or extract_platform(text) != 'Unknown':
+    if state == 'info':
+        if is_url(text):
             context.args = [text]
             context.user_data['state'] = None
             await info_command(update, context)
         else:
             context.user_data['state'] = None
-            await update.message.reply_text("📋 لطفاً یک لینک بفرستید.\nیا برای جستجوی آهنگ، فقط اسمش رو تایپ کنید.")
-            await search_music_inline(update, context)
+            await update.message.reply_text('ℹ️ لطفاً یک لینک بفرستی.')
         return
-    elif state == 'recognize':
-        # کاربر باید فایل بفرسته نه متن
+    if state in ('recognize', 'recognize_wait'):
         await update.message.reply_text(
-            "🎵 **حالا ویس یا فایل صوتی بفرست!**\n(بدون نیاز به دستور)",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 منوی اصلی", callback_data="cmd_back")]])
+            '🎵 حالا ویس یا فایل صوتی بفرست! (بدون نیاز به دستور)',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 منوی اصلی', callback_data='cmd_back')]]),
         )
         context.user_data['state'] = 'recognize_wait'
         return
-    elif state == 'recognize_wait':
-        await update.message.reply_text(
-            "🎵 ویس یا فایل صوتی بفرست تا تشخیص بدم!",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 منوی اصلی", callback_data="cmd_back")]])
-        )
-        return
 
-    # هر متن دیگه‌ای → جستجوی آهنگ
+    # Any other text → music search
     await search_music_inline(update, context)
 
+
 async def search_music_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """جستجوی خودکار آهنگ با تایپ نام در چت"""
+    """Search for tracks when the user types a song name in chat."""
     if not update.message or not update.message.text:
         return
-    from recognizer import Recognizer
     text = update.message.text.strip()
     if len(text) < 2:
         return
 
-    await update.message.reply_text(f"🔍 در حال جستجوی «{text}»...")
+    await update.message.reply_text(f'🔍 در حال جستجوی «{text}»...')
 
-    recognizer = Recognizer()
-    results = await recognizer.search_track(text, limit=5)
+    try:
+        results = await recognizer.search_track(text, limit=MAX_SEARCH_RESULTS)
+    except Exception as e:
+        logger.error(f'Search error: {e}')
+        results = []
 
     if not results:
-        await update.message.reply_text("❌ آهنگی یافت نشد.")
+        await update.message.reply_text('❌ آهنگی پیدا نشد.')
         return
 
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     buttons = []
     for i, track in enumerate(results):
         title = track.get('title', 'نامشخص')
-        artist = track.get('artist', {}).get('name', 'نامشخص') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
-        buttons.append([InlineKeyboardButton(f"🎵 {title} - {artist}", callback_data=f"search_{i}")])
+        artist = track.get('artist', {}).get('name', '') if isinstance(track.get('artist'), dict) else str(track.get('artist', ''))
+        buttons.append([InlineKeyboardButton(f'🎵 {title} - {artist}', callback_data=f'search_{i}')])
 
-    # ذخیره نتایج برای استفاده در callback
     context.user_data['search_results'] = results
+    await update.message.reply_text(f'🎵 نتایج جستجوی «{text}»:', reply_markup=InlineKeyboardMarkup(buttons))
 
-    reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text(f"🎵 نتایج جستجوی «{text}»:", reply_markup=reply_markup)
 
 # ========== Main ==========
 def main():
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN not set in environment.")
+        logger.error('BOT_TOKEN not set in environment.')
         return
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("download", download_command))
-    app.add_handler(CommandHandler("recognize", recognize_command))
-    app.add_handler(CommandHandler("info", info_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("set_quality", set_quality_command))
-    app.add_handler(CommandHandler("set_lang", set_lang_command))
-    app.add_handler(CommandHandler("playlist", playlist_command))
-    app.add_handler(CommandHandler("tag", tag_command))
-    app.add_handler(CommandHandler("convert", convert_command))
-    app.add_handler(CommandHandler("lyrics", lyrics_command))
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('help', help_command))
+    app.add_handler(CommandHandler('download', download_command))
+    app.add_handler(CommandHandler('recognize', recognize_command))
+    app.add_handler(CommandHandler('info', info_command))
+    app.add_handler(CommandHandler('stats', stats_command))
+    app.add_handler(CommandHandler('admin', admin_panel))
+    app.add_handler(CommandHandler('set_quality', set_quality_command))
+    app.add_handler(CommandHandler('set_lang', set_lang_command))
+    app.add_handler(CommandHandler('playlist', playlist_command))
+    app.add_handler(CommandHandler('tag', tag_command))
+    app.add_handler(CommandHandler('convert', convert_command))
+    app.add_handler(CommandHandler('lyrics', lyrics_command))
 
-    # Callback query (admin panel + search results + commands)
     app.add_handler(CallbackQueryHandler(admin_callback, pattern='^admin_'))
     app.add_handler(CallbackQueryHandler(search_callback, pattern='^search_'))
-    app.add_handler(CallbackQueryHandler(recognition_download_callback, pattern='^dl_search$'))
+    app.add_handler(CallbackQueryHandler(recognition_download_callback, pattern='^dl_recognize$'))
     app.add_handler(CallbackQueryHandler(command_callback, pattern='^cmd_'))
 
-    # تشخیص خودکار ویس/فایل صوتی
-    app.add_handler(MessageHandler(
-        filters.VOICE | filters.AUDIO | filters.Document.AUDIO, audio_message_handler
-    ), group=1)
-
-    # Unified text handler (admin commands + broadcast + music search)
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.Document.AUDIO,
+                                   audio_message_handler), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unified_text_handler), group=1)
 
-    # Start bot
-    logger.info("Bot started...")
+    logger.info('Bot started...')
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     main()

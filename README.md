@@ -96,18 +96,22 @@ docker run -d --name whatsmusic-bot --env-file .env -v ./data:/app/data -v ./dow
 ```
 whatsmusic-bot/
 ├── bot.py              # ربات تلگرام + جوین اجباری + پنل ادمین
-├── downloader.py       # دانلود با yt-dlp
-├── recognizer.py       # تشخیص با shazamio
-├── converter.py        # تبدیل ویدیو به صدا با ffmpeg
-├── playlist_manager.py # مدیریت پلی‌لیست‌ها
+├── config.py           # بارگذاری متمرکز تنظیمات از .env
+├── db.py               # لایه دیتابیس SQLite (WAL، کاربران، تنظیمات)
+├── downloader.py       # دانلود با yt-dlp + سیستم retry هوشمند
+├── recognizer.py       # تشخیص با shazamio + جستجو + متن ترانه
+├── converter.py        # تبدیل ویدئو به صدا با ffmpeg + پاکسازی
+├── playlist_manager.py # مدیریت پلی‌لیست‌ها (نوشتن اتمیک)
 ├── quality_manager.py  # مدیریت کیفیت
-├── tag_manager.py      # مدیریت برچسب‌ها
+├── tag_manager.py      # مدیریت برچسب‌ها (SQLite + WAL)
 ├── plugin_manager.py   # سیستم پلاگین
 ├── locales.py          # ترجمه‌ها
-├── extra_commands.py   # دستورات اضافی
+├── extra_commands.py   # دستورات اضافی (کیفیت، زبان، پلی‌لیست، تگ، تبدیل)
 ├── dashboard.py        # داشبورد گرافیکی با Flask
 ├── main.py             # ورودی خط فرمان (CLI)
-├── utils.py            # توابع کمکی
+├── utils.py            # توابع کمکی (نام‌فایل، URL، پاکسازی)
+├── tests/              # تست‌های واحد (unittest)
+├── plugins/            # پلاگین‌های اختیاری
 ├── requirements.txt
 ├── .env.example
 ├── Dockerfile
